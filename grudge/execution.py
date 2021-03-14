@@ -165,24 +165,47 @@ class ExecutionMapper(mappers.Evaluator,
     def map_nodal_sum(self, op, field_expr):
         # FIXME: Could allow array scalars
         # FIXME: Fix CL-specific-ness
-        return sum([
-                cl.array.sum(grp_ary).get()[()]
-                for grp_ary in self.rec(field_expr)
-                ])
+        
+        # Workaround for numpy arrays
+        if isinstance(self.rec(field_expr)[0], np.ndarray):
+            print("Using numpy workaround in map_nodal_sum")
+            return sum([
+                    np.sum(grp_ary)
+                    for grp_ary in self.rec(field_expr)
+                    ])
+        else:
+            return sum([
+                    cl.array.sum(grp_ary).get()[()]
+                    for grp_ary in self.rec(field_expr)
+                    ])
 
     def map_nodal_max(self, op, field_expr):
         # FIXME: Could allow array scalars
         # FIXME: Fix CL-specific-ness
-        return np.max([
-            cl.array.max(grp_ary).get()[()]
-            for grp_ary in self.rec(field_expr)])
+        if isinstance(self.rec(field_expr)[0], np.ndarray):
+            print("Using numpy workaround in map_nodal_max")
+            return np.max([
+                    np.max(grp_ary)
+                    for grp_ary in self.rec(field_expr)
+                    ]) 
+        else:
+            return np.max([
+                cl.array.max(grp_ary).get()[()]
+                for grp_ary in self.rec(field_expr)])
 
     def map_nodal_min(self, op, field_expr):
         # FIXME: Could allow array scalars
         # FIXME: Fix CL-specific-ness
-        return np.min([
-            cl.array.min(grp_ary).get()[()]
-            for grp_ary in self.rec(field_expr)])
+        if isinstance(self.rec(field_expr)[0], np.ndarray):
+            print("Using numpy workaround in map_nodal_min")
+            return np.min([
+                    np.min(grp_ary)
+                    for grp_ary in self.rec(field_expr)
+                    ])
+        else: 
+            return np.min([
+                cl.array.min(grp_ary).get()[()]
+                for grp_ary in self.rec(field_expr)])
 
     # }}}
 
@@ -596,7 +619,8 @@ class ExecutionMapper(mappers.Evaluator,
                     and isinstance(self.array_context, GrudgeArrayContext):
                 n_out, n_in = matrices_ary_dev[0].shape
                 n_elem = field[in_grp.index].shape[0]
-                options = lp.Options(no_numpy=True, return_dict=True)
+                options = lp.Options(return_dict=True)
+                #options = lp.Options(no_numpy=True, return_dict=True)
                 program = dgk.gen_diff_knl_fortran2(noperators, n_elem, n_in,
                     n_out, options=options, fp_format=field.entry_dtype)
             else:

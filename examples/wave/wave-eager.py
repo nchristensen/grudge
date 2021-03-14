@@ -27,7 +27,7 @@ import pyopencl as cl
 
 from pytools.obj_array import flat_obj_array
 
-from grudge.grudge_array_context import GrudgeArrayContext
+from grudge.grudge_array_context import GrudgeArrayContext, MultipleDispatchArrayContext
 from meshmode.array_context import PyOpenCLArrayContext  # noqa F401
 from meshmode.dof_array import thaw
 
@@ -113,13 +113,18 @@ def bump(actx, discr, t=0):
 
 
 def main():
-    cl_ctx = cl.create_some_context()
-    queue = cl.CommandQueue(cl_ctx, properties=cl.command_queue_properties.PROFILING_ENABLE)
+    queues = []
+    for i in range(2):
+        cl_ctx = cl.create_some_context()
+        queue = cl.CommandQueue(cl_ctx, properties=cl.command_queue_properties.PROFILING_ENABLE)
+        queues.append(queue)
     from pyopencl.tools import ImmediateAllocator
-    actx = GrudgeArrayContext(queue, allocator=ImmediateAllocator(queue))
+    #TODO: Fix allocator
+    #actx = MultipleDispatchArrayContext([queue], allocator=ImmediateAllocator(queue))
+    actx = MultipleDispatchArrayContext(queues, allocator=None)
 
     dim = 3
-    nel_1d = 2**5
+    nel_1d = 16#2**5
     from meshmode.mesh.generation import generate_regular_rect_mesh
     mesh = generate_regular_rect_mesh(
             coord_dtype=np.float64,
@@ -153,7 +158,7 @@ def main():
         return wave_operator(discr, c=1, w=w)
 
     t = 0
-    t_final = 3
+    t_final = 0.0001#3
     istep = 0
     while t < t_final:
         fields = rk4_step(fields, t, dt, rhs)

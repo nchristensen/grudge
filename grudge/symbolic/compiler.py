@@ -1035,7 +1035,7 @@ class ToLoopyInstructionMapper:
                 options=lp.Options(
                     check_dep_resolution=False,
                     return_dict=True,
-                    no_numpy=True,
+                    #no_numpy=True,
                     )
                 )
         for arg in knl.args:

@@ -1,4 +1,4 @@
-from meshmode.array_context import PyOpenCLArrayContext
+from meshmode.array_context import PyOpenCLArrayContext, ArrayContext
 from meshmode.dof_array import IsDOFArray
 from pytools.tag import Tag
 from pytools import memoize_method
@@ -41,7 +41,6 @@ class VecOpIsDOFArray(Tag):
 
 class IsOpArray(Tag):
     pass
-
 
 class GrudgeArrayContext(PyOpenCLArrayContext):
 
@@ -260,4 +259,116 @@ class GrudgeArrayContext(PyOpenCLArrayContext):
 
         return evt, result
         '''
+
+class BaseNumpyArrayContext(ArrayContext):
+
+    #def __init__(self):
+    #    super().__init__()
+
+    def empty(self, shape, dtype):
+        return np.empty(shape, dtype=dtype)
+
+    def zeros(self, shape, dtype):
+        return np.zeros(shape, dtype=dtype)
+
+    def from_numpy(self, np_array: np.ndarray):
+        return np_array
+
+    def to_numpy(self, np_array: np.ndarray):
+        return np_array
+
+    def freeze(self, np_array: np.ndarray):
+        return np_array
+
+    def thaw(self, np_array: np.ndarray):
+        return np_array
+
+    #def call_loopy(self, program, **kwargs):
+    #    program = self.transform_loopy_program(program)
+    #    evt, result = program(self.queue, **
+
+    # TODO
+    #def transform_loopy_program(self, program):
+    #    pass
+
+class MultipleDispatchArrayContext(BaseNumpyArrayContext):
+    
+    def __init__(self, queues, allocator=None, wait_event_queue_length=None):
+
+        super().__init__()
+        self.queues = queues
+        self.contexts = (queue.context for queue in queues)
+        self.allocator = allocator if allocator else None
+
+        # TODO add queue length stuff as needed
+        #if wait_event_queue_length is None:
+        #    wait_event_queue_length = 10
+
+    def call_loopy(self, program, **kwargs):
+        print(program.name)
+        #print(kwargs)
+        #for arg in kwargs.values():
+        #    #if isinstance(arg, np.ndarray):
+        #    #    setattr(arg, "offset", 0)
+        #    print(type(arg))
+        #print(program)
+        #print(program.options)
+        program = lp.set_options(program, no_numpy=False)
+        #exit()
+
+        #for arg in program.args:
+            #try:
+            #    print(arg.shape)
+            #except AttributeError:
+            #    pass
+            #print(arg.tags)
+        for key, val in kwargs.items():
+            try:
+                print(key)
+                print(val.shape)
+            except AttributeError:
+                pass
+        
+
+        # If it has a DOF Array, then split the dof array into two or more viewed and execute with each view
+        # What about any loop bounds. Do they need to be reassigned?
+        # Loopy limits, maybe use fix_parameters to adjust?
+        # Experiment with sqrt function first
+        if program.name == "actx_special_sqrt":
+            out_shape = kwargs["out"].shape
+            mid = out_shape[0] // 2
+            print(mid)
+            # Currently special functions do not have fixed parameters
+            #program = lp.fix_parameters(program, i0=mid)
+            kwargs1 = kwargs.copy()
+            kwargs2 = kwargs.copy()
+            # Create separate views of input and output arrays
+            kwargs1["inp0"] = kwargs["inp0"][:mid,:]
+            kwargs2["inp0"] = kwargs["inp0"][mid:,:]
+            kwargs1["out"] = kwargs["out"][:mid,:]
+            kwargs2["out"] = kwargs["out"][mid:,:]
+ 
+            result = np.empty(out_shape ,dtype=np.float64)
+
+            evt, result1 = program(self.queues[0], **kwargs1, allocator=self.allocator)
+            evt, result2 = program(self.queues[1], **kwargs2, allocator=self.allocator)
+
+            #evt, result3 = program(self.queues[0], **kwargs, allocator=self.allocator)
+            
+            # kwargs["out"] should be completely filled by both operations
+            print(result1["out"])
+            print(result2["out"])
+            print(kwargs["out"])
+            #print(np.sum(result["out"] - result2["out"))
+            exit()
+            return evt, result        
+
+        else:
+            evt, result = program(self.queues[0], **kwargs, allocator=self.allocator)
+            return evt, result        
+
+    @memoize_method
+    def transform_loopy_program(self, program):
+        pass 
+    
 # vim: foldmethod=marker
