@@ -42,7 +42,7 @@ from grudge.function_registry import base_function_registry
 
 import grudge.loopy_dg_kernels as dgk
 from grudge.grudge_array_context import (GrudgeArrayContext, VecIsDOFArray,
-    FaceIsDOFArray, VecOpIsDOFArray, IsOpArray)
+    FaceIsDOFArray, VecOpIsDOFArray)
 
 import logging
 logger = logging.getLogger(__name__)
@@ -130,7 +130,7 @@ class ExecutionMapper(mappers.Evaluator,
                 """ % op_name,
                 kernel_data=[
                     lp.GlobalArg("result", None, shape=lp.auto, tags=IsDOFArray()),
-                    lp.GlobalArg("operand", None, shape=lp.auto, tags=IsOpArray()),
+                    lp.GlobalArg("operand", None, shape=lp.auto, tags=IsDOFArray()),
                     ...
                 ],
                 name="grudge_elementwise_%s" % op_name)

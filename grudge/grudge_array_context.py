@@ -39,8 +39,9 @@ class VecOpIsDOFArray(Tag):
     pass
 
 
-class IsOpArray(Tag):
-    pass
+# This was use in grudge_elwise_reduction but maybe is not needed.
+#class IsOpArray(Tag):
+#    pass
 
 class GrudgeArrayContext(PyOpenCLArrayContext):
 
@@ -69,8 +70,8 @@ class GrudgeArrayContext(PyOpenCLArrayContext):
         for arg in program.args:
             if isinstance(arg.tags, IsDOFArray):
                 program = lp.tag_array_axes(program, arg.name, "f,f")
-            elif isinstance(arg.tags, IsOpArray):
-                program = lp.tag_array_axes(program, arg.name, "f,f")
+            #elif isinstance(arg.tags, IsOpArray):
+            #    program = lp.tag_array_axes(program, arg.name, "f,f")
             elif isinstance(arg.tags, VecIsDOFArray):
                 program = lp.tag_array_axes(program, arg.name, "sep,f,f")
             #elif isinstance(arg.tags, VecOpIsDOFArray):
@@ -305,7 +306,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         #    wait_event_queue_length = 10
 
     def call_loopy(self, program, **kwargs):
-        #print(program.name)
+        print(program.name)
         #print(kwargs)
         #for arg in kwargs.values():
         #    #if isinstance(arg, np.ndarray):
@@ -324,8 +325,8 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             #print(arg.tags)
         for key, val in kwargs.items():
             try:
-                pass
-                #print(key)
+                #pass
+                print(key)
                 #print(val.shape)
             except AttributeError:
                 pass
@@ -335,56 +336,79 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         # What about any loop bounds. Do they need to be reassigned?
         # Loopy limits, maybe use fix_parameters to adjust?
         # Experiment with sqrt function first
-        #for arg in program.args:
+
+        """
+        has_dof_array = False
+        has_vec_dof_array = False
+        has_face_dof_array = False
+        for arg in program.args:
+            if isinstance(arg.tags, IsDOFArray):
+                has_dof_array = True
+            elif isinstance(arg.tags, VecIsDOFArray):
+                has_vec_dof_array = True
+            elif isinstance(arg.tags, FaceIsDOFArray):
+                has_face_dof_array = True
             #pass
             #print(arg.tags)
+        """
 
+        excluded = ["nodes", "resample_by_picking", "grudge_assign_0", "grudge_assign_2", "grudge_assign_1", "resample_by_mat","face_mass","opt_diff","diff"]
 
-        if program.name == "actx_special_sqrt":
+        if program.name not in excluded:
+            print(program.name)
             n = 4
-            out_shape = kwargs["out"].shape
+            
+            dof_array_names = []
+            for arg in program.args:
+                if isinstance(arg.tags, IsDOFArray):
+                    nelem = kwargs[arg.name].shape[0]
+                    dof_array_names.append(arg.name)
+
             split_points = []
-            step = out_shape[0] // n
-            for i in range(0, out_shape[0], step):
+            step = nelem // n
+            for i in range(0, nelem, step):
                 split_points.append(i)
+            split_points.append(nelem)
             print(split_points)
             # Currently special functions do not have fixed parameters
             #program = lp.fix_parameters(program, i0=mid)
 
             # make separate kwargs for each n
             kwargs_list = []
+            program_list = []
             for i in range(n):
                 kwargs_list.append(kwargs.copy())
 
+            for i in range(n):
+                if "nelements" in program.args:
+                    nelem = split_points[i+1] - split_points[i]
+                    p = lp.set_parameters(program, nelements=nelem)
+                    program_list.append(p)
+                else:
+                    program_list.append(program.copy())
+
             # Create separate views of input and output arrays
             start = 0
-            for i in range(1, n-1):
-                end = i * step
-                kwargs_list[i-1]["inp0"] = kwargs["inp0"][start:end,:]
-                kwargs_list[i-1]["out"] = kwargs["out"][start:end,:]
-                start = end
-            kwargs_list[n-1]["inp0"] = kwargs["inp0"][start:out_shape[0],:]
-            kwargs_list[n-1]["out"] = kwargs["out"][start:out_shape[0],:]
-            
-            #result = np.empty(out_shape ,dtype=np.float64)
+            for i in range(n-1):
+                start = split_points[i]
+                end = split_points[i+1]
+                for name in dof_array_names:
+                    kwargs_list[i-1][name] = kwargs[name][start:end,:]
 
+            # Dispatch the tasks to each queue
             result_list = []
             evt_list = []
             queue_count = len(self.queues)
             for i in range(n):
-                evt, result = program(self.queues[i % queue_count], **kwargs_list[i], allocator=self.allocator)
+                evt, result = program_list[i](self.queues[i % queue_count], **kwargs_list[i], allocator=self.allocator)
                 evt_list.append(evt)
                 result_list.append(result)
 
+            
+
             #for i in range(n):
             #    print(result_list[i])
-
-            #evt, result1 = program(self.queues[0], **kwargs1, allocator=self.allocator)
-            #evt, result2 = program(self.queues[1], **kwargs2, allocator=self.allocator)
-            #evt, result3 = program(self.queues[0], **kwargs, allocator=self.allocator)
             # kwargs["out"] should be completely filled by both operations
-            #print(result1["out"])
-            #print(result2["out"])
             #print(kwargs["out"])
             #print(np.sum(result["out"] - result2["out"))
             #exit()
