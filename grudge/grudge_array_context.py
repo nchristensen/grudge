@@ -430,21 +430,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         program = lp.set_options(program, no_numpy=False)
         #exit()
 
-        #for arg in program.args:
-            #try:
-            #    print(arg.shape)
-            #except AttributeError:
-            #    pass
-            #print(arg.tags)
-        for key, val in kwargs.items():
-            try:
-                #pass
-                print(key)
-                #print(val.shape)
-            except AttributeError:
-                pass
-        
-
         # If it has a DOF Array, then split the dof array into two or more viewed and execute with each view
         # What about any loop bounds. Do they need to be reassigned?
         # Loopy limits, maybe use fix_parameters to adjust?
@@ -465,7 +450,11 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             #print(arg.tags)
         """
 
-        excluded = ["nodes", "resample_by_picking", "grudge_assign_0", "grudge_assign_2", "grudge_assign_1", "resample_by_mat","face_mass","opt_diff","diff"]
+        excluded = ["nodes", "resample_by_picking", 
+                    "grudge_assign_0", "grudge_assign_2", 
+                    "grudge_assign_1", "resample_by_mat",
+                    "face_mass","diff_3_axis","diff_2_axis",
+                    "diff_1_axis", "elwise_linear"]
 
         if program.name not in excluded:
             print(program.name)
@@ -494,10 +483,12 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 # FIXME: What if it is called something else
                 if "nelements" in program.args:
                     nelem = split_points[i+1] - split_points[i]
-                    p = lp.set_parameters(program, nelements=nelem)
+                    p = lp.fix_parameters(program, nelements=nelem)
                     program_list.append(p)
                 else:
+                    #print(program.args)
                     print("nelements is not the name")
+                    
                     program_list.append(program.copy())
 
             # Create separate views of input and output arrays
