@@ -419,6 +419,10 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         #    wait_event_queue_length = 10
 
     def call_loopy(self, program, **kwargs):
+
+        # No code transformations enabled at this point
+        #program = self.transform_loopy_program(program)
+        
         print(program.name)
         #print(kwargs)
         #for arg in kwargs.values():
@@ -481,6 +485,8 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
             for i in range(n):
                 # FIXME: What if it is called something else
+                # This actually does not work. "nelements does not
+                # exist if the parameters are already fixed
                 if "nelements" in program.args:
                     nelem = split_points[i+1] - split_points[i]
                     p = lp.fix_parameters(program, nelements=nelem)
