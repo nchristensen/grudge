@@ -370,8 +370,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 split_points.append(i)
             split_points.append(nelem)
             print(split_points)
-            # Currently special functions do not have fixed parameters
-            #program = lp.fix_parameters(program, i0=mid)
 
             # make separate kwargs for each n
             kwargs_list = []
@@ -380,11 +378,13 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 kwargs_list.append(kwargs.copy())
 
             for i in range(n):
+                # FIXME: What if it is called something else
                 if "nelements" in program.args:
                     nelem = split_points[i+1] - split_points[i]
                     p = lp.set_parameters(program, nelements=nelem)
                     program_list.append(p)
                 else:
+                    print("nelements is not the name")
                     program_list.append(program.copy())
 
             # Create separate views of input and output arrays
