@@ -305,7 +305,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         #    wait_event_queue_length = 10
 
     def call_loopy(self, program, **kwargs):
-        print(program.name)
+        #print(program.name)
         #print(kwargs)
         #for arg in kwargs.values():
         #    #if isinstance(arg, np.ndarray):
@@ -324,8 +324,9 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             #print(arg.tags)
         for key, val in kwargs.items():
             try:
-                print(key)
-                print(val.shape)
+                pass
+                #print(key)
+                #print(val.shape)
             except AttributeError:
                 pass
         
@@ -334,33 +335,59 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         # What about any loop bounds. Do they need to be reassigned?
         # Loopy limits, maybe use fix_parameters to adjust?
         # Experiment with sqrt function first
+        #for arg in program.args:
+            #pass
+            #print(arg.tags)
+
+
         if program.name == "actx_special_sqrt":
+            n = 4
             out_shape = kwargs["out"].shape
-            mid = out_shape[0] // 2
-            print(mid)
+            split_points = []
+            step = out_shape[0] // n
+            for i in range(0, out_shape[0], step):
+                split_points.append(i)
+            print(split_points)
             # Currently special functions do not have fixed parameters
             #program = lp.fix_parameters(program, i0=mid)
-            kwargs1 = kwargs.copy()
-            kwargs2 = kwargs.copy()
+
+            # make separate kwargs for each n
+            kwargs_list = []
+            for i in range(n):
+                kwargs_list.append(kwargs.copy())
+
             # Create separate views of input and output arrays
-            kwargs1["inp0"] = kwargs["inp0"][:mid,:]
-            kwargs2["inp0"] = kwargs["inp0"][mid:,:]
-            kwargs1["out"] = kwargs["out"][:mid,:]
-            kwargs2["out"] = kwargs["out"][mid:,:]
- 
-            result = np.empty(out_shape ,dtype=np.float64)
-
-            evt, result1 = program(self.queues[0], **kwargs1, allocator=self.allocator)
-            evt, result2 = program(self.queues[1], **kwargs2, allocator=self.allocator)
-
-            #evt, result3 = program(self.queues[0], **kwargs, allocator=self.allocator)
+            start = 0
+            for i in range(1, n-1):
+                end = i * step
+                kwargs_list[i-1]["inp0"] = kwargs["inp0"][start:end,:]
+                kwargs_list[i-1]["out"] = kwargs["out"][start:end,:]
+                start = end
+            kwargs_list[n-1]["inp0"] = kwargs["inp0"][start:out_shape[0],:]
+            kwargs_list[n-1]["out"] = kwargs["out"][start:out_shape[0],:]
             
+            #result = np.empty(out_shape ,dtype=np.float64)
+
+            result_list = []
+            evt_list = []
+            queue_count = len(self.queues)
+            for i in range(n):
+                evt, result = program(self.queues[i % queue_count], **kwargs_list[i], allocator=self.allocator)
+                evt_list.append(evt)
+                result_list.append(result)
+
+            #for i in range(n):
+            #    print(result_list[i])
+
+            #evt, result1 = program(self.queues[0], **kwargs1, allocator=self.allocator)
+            #evt, result2 = program(self.queues[1], **kwargs2, allocator=self.allocator)
+            #evt, result3 = program(self.queues[0], **kwargs, allocator=self.allocator)
             # kwargs["out"] should be completely filled by both operations
-            print(result1["out"])
-            print(result2["out"])
-            print(kwargs["out"])
+            #print(result1["out"])
+            #print(result2["out"])
+            #print(kwargs["out"])
             #print(np.sum(result["out"] - result2["out"))
-            exit()
+            #exit()
             return evt, result        
 
         else:

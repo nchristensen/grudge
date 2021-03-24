@@ -158,12 +158,12 @@ def main():
         return wave_operator(discr, c=1, w=w)
 
     t = 0
-    t_final = 0.0001#3
+    t_final = 3*dt
     istep = 0
     while t < t_final:
         fields = rk4_step(fields, t, dt, rhs)
 
-        if istep % 10 == 0:
+        if istep % 1 == 0:
             print(f"step: {istep} t: {t} L2: {discr.norm(fields[0])} "
                     f"sol max: {discr.nodal_max('vol', fields[0])}")
             vis.write_vtk_file("fld-wave-eager-%04d.vtu" % istep,
