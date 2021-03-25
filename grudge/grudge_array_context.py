@@ -423,7 +423,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         # No code transformations enabled at this point
         #program = self.transform_loopy_program(program)
         
-        print(program.name)
+        #print(program.name)
         #print(kwargs)
         #for arg in kwargs.values():
         #    #if isinstance(arg, np.ndarray):
@@ -474,7 +474,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             step = nelem // n
             for i in range(0, nelem, step):
                 split_points.append(i)
-            split_points.append(nelem)
+            split_points[-1] = nelem
             print(split_points)
 
             # make separate kwargs for each n
