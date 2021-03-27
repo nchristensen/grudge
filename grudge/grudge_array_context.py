@@ -1,10 +1,9 @@
 from meshmode.array_context import PyOpenCLArrayContext, ArrayContext
-from meshmode.dof_array import IsDOFArray
-from pytools.tag import Tag
 from pytools import memoize_method
 import loopy as lp
 import pyopencl.array as cla
 import grudge.loopy_dg_kernels as dgk
+from grudge.grudge_tags import IsDOFArray, IsVecDOFArray, IsFaceDOFArray, IsVecOpArray, ParameterValue
 from numpy import prod
 import hjson
 import numpy as np
@@ -28,17 +27,6 @@ def get_transformation_id(device_id):
     od = hjson.loads(hjson_text)
     return od[device_id]
 
-class VecIsDOFArray(Tag):
-    pass
-
-
-class FaceIsDOFArray(Tag):
-    pass
-
-
-class VecOpIsDOFArray(Tag):
-    pass
-
 def get_fp_string(dtype):
     return "FP64" if dtype == np.float64 else "FP32"
 
@@ -60,33 +48,35 @@ class GrudgeArrayContext(PyOpenCLArrayContext):
         thawed = super().thaw(array)
         if type(getattr(array, "tags", None)) == IsDOFArray:
             cq = thawed.queue
+            # Should this be run through the array context
+            #evt, out = self.call_loopy(ctof_knl, **{input: thawed})
             _, (out,) = ctof_knl(cq, input=thawed)
             thawed = out
-            # May or may not be needed
-            #thawed.tags = "dof_array"
         return thawed
 
     @memoize_method
     def transform_loopy_program(self, program):
-        #print(program.name)
 
+        # This assumes arguments have only one tag
         for arg in program.args:
             if isinstance(arg.tags, IsDOFArray):
                 program = lp.tag_array_axes(program, arg.name, "f,f")
-            #elif isinstance(arg.tags, IsOpArray):
-            #    program = lp.tag_array_axes(program, arg.name, "f,f")
-            elif isinstance(arg.tags, VecIsDOFArray):
+            elif isinstance(arg.tags, IsVecDOFArray):
                 program = lp.tag_array_axes(program, arg.name, "sep,f,f")
-            #elif isinstance(arg.tags, VecOpIsDOFArray):
-            #    program = lp.tag_array_axes(program, arg.name, "sep,c,c")
-            elif isinstance(arg.tags, FaceIsDOFArray):
+            elif isinstance(arg.tags, IsVecOpArray):
+                program = lp.tag_array_axes(program, arg.name, "sep,c,c")
+            elif isinstance(arg.tags, IsFaceDOFArray):
                 program = lp.tag_array_axes(program, arg.name, "N1,N0,N2")
+            elif isinstance(arg.tags, ParameterValue):
+                program = lp.fix_parameters(program, **{arg.name: arg.tags.value})
+
+        # Set no_numpy and return_dict options here?
 
         device_id = "NVIDIA Titan V"
         # This read could be slow
         transform_id = get_transformation_id(device_id)
 
-        if "opt_diff" in program.name:
+        if "diff" in program.name:
 
             #program = lp.set_options(program, "write_cl")
             # TODO: Dynamically determine device id,
@@ -431,7 +421,14 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         #    print(type(arg))
         #print(program)
         #print(program.options)
+
+        # Move this into transform code
         program = lp.set_options(program, no_numpy=False)
+        for arg in program.args:
+            if isinstance(arg.tags, ParameterValue):
+                program = lp.fix_parameters(program, **{arg.name: arg.tags.value})
+
+
         #exit()
 
         # If it has a DOF Array, then split the dof array into two or more viewed and execute with each view

@@ -41,20 +41,70 @@ from grudge import sym
 from grudge.function_registry import base_function_registry
 
 import grudge.loopy_dg_kernels as dgk
-from grudge.grudge_array_context import (GrudgeArrayContext, VecIsDOFArray,
-    FaceIsDOFArray, VecOpIsDOFArray)
+from grudge.grudge_array_context import GrudgeArrayContext
+from grudge.grudge_tags import (IsVecDOFArray,
+    IsFaceDOFArray, IsVecOpArray, ParameterValue)
 
 import logging
 logger = logging.getLogger(__name__)
 
 MPI_TAG_SEND_TAGS = 1729
-from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa: F401
+#from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa: F401
 
 
 ResultType = Union[DOFArray, Number]
 
 
 # {{{ exec mapper
+
+#@memoize_method
+#@memoize_in(self.array_context,
+#        (ExecutionMapper, "reference_derivative_prg"))
+def diff_prg(n_mat, n_elem, n_in, n_out, fp_format=np.float32,
+        options=None):
+    
+    @memoize_in(diff_prg, "_gen_diff_knl")
+    def _gen_diff_knl(n_mat, n_elem, n_in, n_out, fp_format):
+        knl = lp.make_kernel(
+        """{[imatrix,iel,idof,j]:
+            0<=imatrix<nmatrices and
+            0<=iel<nelements and
+            0<=idof<ndiscr_nodes_out and
+            0<=j<ndiscr_nodes_in}""",
+        """
+        result[imatrix,iel,idof] = simul_reduce(sum, j, diff_mat[imatrix, idof, j] * vec[iel, j])
+        """,
+        kernel_data=[
+            lp.GlobalArg("result", fp_format, shape=(n_mat, n_elem, n_out),
+                offset=lp.auto, tags=IsVecDOFArray()),
+            lp.GlobalArg("diff_mat", fp_format, shape=(n_mat, n_out, n_in),
+                offset=lp.auto, tags=IsVecOpArray()),
+            lp.GlobalArg("vec", fp_format, shape=(n_elem, n_in),
+                offset=lp.auto, tags=IsDOFArray()),
+            lp.ValueArg("nelements", tags=ParameterValue(n_elem)),
+            lp.ValueArg("nmatrices", tags=ParameterValue(n_mat)),
+            lp.ValueArg("ndiscr_nodes_out", tags=ParameterValue(n_out)),
+            lp.ValueArg("ndiscr_nodes_in", tags=ParameterValue(n_in))
+        ],
+        assumptions="nelements > 0 \
+                     and ndiscr_nodes_out > 0 \
+                     and ndiscr_nodes_in > 0 and nmatrices > 0",
+        options=options,
+        name="diff_{}_axis".format(n_mat)
+        )
+        return knl
+
+    knl = _gen_diff_knl(n_mat, n_elem, n_in, n_out, fp_format)
+
+    # This should be in array context probably but need to avoid circular dependency
+    # Probably should split kernels out of grudge_array_context
+    knl = lp.tag_inames(knl, "imatrix: ilp")
+    result = lp.fix_parameters(knl, nmatrices=n_mat)
+    knl = lp.tag_array_axes(knl, "result", "sep,c,c")
+    return knl
+
+
+
 
 class ExecutionMapper(mappers.Evaluator,
         mappers.BoundOpMapperMixin,
@@ -314,14 +364,17 @@ class ExecutionMapper(mappers.Evaluator,
                 kernel_data=[
                     lp.GlobalArg("result", fp_format, shape=lp.auto, tags=IsDOFArray()),
                     lp.GlobalArg("vec", fp_format, shape=lp.auto, tags=IsDOFArray()),
-                    lp.GlobalArg("mat", fp_format, shape=lp.auto)
+                    lp.GlobalArg("mat", fp_format, shape=lp.auto),
+                    lp.ValueArg("nelements", tags=ParameterValue(nelements)),
+                    lp.ValueArg("ndiscr_nodes_out", tags=ParameterValue(nnodes)),
+                    lp.ValueArg("ndiscr_nodes_in", tags=ParameterValue(nnodes)),
                 ],
                 name="elwise_linear")
 
             result = lp.tag_array_axes(result, "mat", "stride:auto,stride:auto")
-            result = lp.fix_parameters(result, nelements=nelements, 
-                                             ndiscr_nodes_out=nnodes,
-                                             ndiscr_nodes_in=nnodes)
+            #result = lp.fix_parameters(result, nelements=nelements, 
+            #                                 ndiscr_nodes_out=nnodes,
+            #                                 ndiscr_nodes_in=nnodes)
             
             return result
 
@@ -393,7 +446,7 @@ class ExecutionMapper(mappers.Evaluator,
                 """,
                 kernel_data=[
                     lp.GlobalArg("result", None, shape=lp.auto, tags=IsDOFArray()),
-                    lp.GlobalArg("vec", None, shape=lp.auto, tags=FaceIsDOFArray()),
+                    lp.GlobalArg("vec", None, shape=lp.auto, tags=IsFaceDOFArray()),
                     "..."
                 ],
                 name="face_mass")
@@ -555,34 +608,6 @@ class ExecutionMapper(mappers.Evaluator,
 
         assert repr_op.dd_in.domain_tag == repr_op.dd_out.domain_tag
 
-        @memoize_in(self.array_context,
-                (ExecutionMapper, "reference_derivative_prg"))
-        def prg(n_mat):
-            result = make_loopy_program(
-                """{[imatrix, iel, idof, j]:
-                    0<=imatrix<nmatrices and
-                    0<=iel<nelements and
-                    0<=idof<nunit_nodes_out and
-                    0<=j<nunit_nodes_in}""",
-                """
-                result[imatrix, iel, idof] = simul_reduce(sum,
-                        j, diff_mat[imatrix, idof, j] * vec[iel, j])
-                """,
-                kernel_data=[
-                    lp.GlobalArg("result", None, shape=lp.auto,
-                                    tags=VecIsDOFArray()),
-                    lp.GlobalArg("vec", None, shape=lp.auto, tags=IsDOFArray()),
-                    lp.GlobalArg("diff_mat", None, shape=lp.auto,
-                        tags=VecOpIsDOFArray()),
-                    ...
-                ],
-                name="diff_{}_axis".format(n_mat))
-
-            result = lp.fix_parameters(result, nmatrices=n_mat)
-            result = lp.tag_inames(result, "imatrix: ilp")
-            result = lp.tag_array_axes(result, "result", "sep,c,c")
-            return result
-
         noperators = len(insn.operators)
 
         in_discr = self.discrwb.discr_from_dd(repr_op.dd_in)
@@ -618,26 +643,11 @@ class ExecutionMapper(mappers.Evaluator,
                 matrices_ary_dev = self.array_context.from_numpy(matrices_ary)
                 self.bound_op.operator_data_cache[cache_key] = matrices_ary_dev
 
-            # Breaks on complex data types without check
-            # TODO Add fallback transformations to hjson file
-            # TODO Use the above kernel rather than the one in loopy_dg_kernels
-            # TODO Add transformations for other numbers of operators
-            if (field.entry_dtype == np.float64
-                    or field.entry_dtype == np.float32) \
-                    and isinstance(self.array_context, GrudgeArrayContext):
-                n_out, n_in = matrices_ary_dev[0].shape
-                n_elem = field[in_grp.index].shape[0]
-                options = lp.Options(return_dict=True)
-                #options = lp.Options(no_numpy=True, return_dict=True)
-                program = dgk.gen_diff_knl_fortran2(noperators, n_elem, n_in,
-                    n_out, options=options, fp_format=field.entry_dtype)
-            else:
-                program = prg(noperators)
-
-            #if noperators == 3:
-            #    np.set_printoptions(precision=4, linewidth=200)
-            #    print(matrices_ary_dev.get())
-            #    exit()
+            n_out, n_in = matrices_ary_dev[0].shape
+            n_elem = field[in_grp.index].shape[0]
+            fp_format = field.entry_dtype
+            options = lp.Options(no_numpy=False, return_dict=True)
+            program = diff_prg(noperators, n_elem, n_in, n_out, options=options, fp_format=field.entry_dtype)
 
             self.array_context.call_loopy(
                     program,
