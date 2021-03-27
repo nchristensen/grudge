@@ -423,10 +423,10 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         #print(program.options)
 
         # Move this into transform code
-        program = lp.set_options(program, no_numpy=False)
-        for arg in program.args:
-            if isinstance(arg.tags, ParameterValue):
-                program = lp.fix_parameters(program, **{arg.name: arg.tags.value})
+        #program = lp.set_options(program, no_numpy=False)
+        #for arg in program.args:
+        #    if isinstance(arg.tags, ParameterValue):
+        #        program = lp.fix_parameters(program, **{arg.name: arg.tags.value})
 
 
         #exit()
@@ -455,11 +455,11 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     "grudge_assign_0", "grudge_assign_2", 
                     "grudge_assign_1", "resample_by_mat",
                     "face_mass","diff_3_axis","diff_2_axis",
-                    "diff_1_axis", "elwise_linear"]
+                    "diff_1_axis"]
 
         if program.name not in excluded:
             print(program.name)
-            n = 4
+            n = 4 # Total number of tasks to dole out round-robin to queues
             
             dof_array_names = []
             for arg in program.args:
@@ -469,10 +469,9 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
             split_points = []
             step = nelem // n
-            for i in range(0, nelem, step):
-                split_points.append(i)
-            split_points[-1] = nelem
-            print(split_points)
+            for i in range(n):
+                split_points.append(step*i)
+            split_points.append(nelem)
 
             # make separate kwargs for each n
             kwargs_list = []
@@ -481,22 +480,20 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 kwargs_list.append(kwargs.copy())
 
             for i in range(n):
-                # FIXME: What if it is called something else
-                # This actually does not work. "nelements does not
-                # exist if the parameters are already fixed
-                if "nelements" in program.args:
-                    nelem = split_points[i+1] - split_points[i]
-                    p = lp.fix_parameters(program, nelements=nelem)
-                    program_list.append(p)
-                else:
-                    #print(program.args)
-                    print("nelements is not the name")
-                    
-                    program_list.append(program.copy())
+ 
+                p = program.copy()
+                if program.name == "elwise_linear":   
+                    for arg in p.args:
+                        if arg.name == "nelements":
+                            nelem = split_points[i+1] - split_points[i]
+                            arg.tags.value = nelem
+
+                p = self.transform_loopy_program(p)
+                program_list.append(p)
 
             # Create separate views of input and output arrays
             start = 0
-            for i in range(n-1):
+            for i in range(n):
                 start = split_points[i]
                 end = split_points[i+1]
                 for name in dof_array_names:
@@ -522,11 +519,20 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             return evt, result        
 
         else:
+            program = self.transform_loopy_program(program)
             evt, result = program(self.queues[0], **kwargs, allocator=self.allocator)
             return evt, result        
 
-    @memoize_method
+    # Somehow memoization cannot detect changes in tags
+    #@memoize_method
     def transform_loopy_program(self, program):
-        pass 
+        # Move this into transform code
+        program = lp.set_options(program, no_numpy=False)
+        for arg in program.args:
+            if isinstance(arg.tags, ParameterValue):
+                program = lp.fix_parameters(program, **{arg.name: arg.tags.value})
+        return program
+
+ 
     
 # vim: foldmethod=marker
