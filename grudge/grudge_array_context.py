@@ -1,5 +1,6 @@
 from meshmode.array_context import PyOpenCLArrayContext, ArrayContext
 from pytools import memoize_method
+from pytools.obj_array import make_obj_array
 import loopy as lp
 import pyopencl.array as cla
 import grudge.loopy_dg_kernels as dgk
@@ -454,61 +455,67 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         excluded = ["nodes", "resample_by_picking", 
                     "grudge_assign_0", "grudge_assign_2", 
                     "grudge_assign_1", "resample_by_mat",
-                    "face_mass","diff_3_axis","diff_2_axis",
-                    "diff_1_axis"]
+                    "face_mass"]
 
         if program.name not in excluded:
             print(program.name)
             n = 4 # Total number of tasks to dole out round-robin to queues
-            
-            dof_array_names = []
+
+            dof_array_names = {}
             for arg in program.args:
                 if isinstance(arg.tags, IsDOFArray):
                     nelem = kwargs[arg.name].shape[0]
-                    dof_array_names.append(arg.name)
-
+                    dof_array_names[arg.name] = arg.tags
+                elif isinstance(arg.tags, IsVecDOFArray):
+                    nelem = kwargs[arg.name][0].shape[0]
+                    dof_array_names[arg.name] = arg.tags
+            
             split_points = []
             step = nelem // n
             for i in range(n):
                 split_points.append(step*i)
             split_points.append(nelem)
 
-            # make separate kwargs for each n
-            kwargs_list = []
             program_list = []
             for i in range(n):
-                kwargs_list.append(kwargs.copy())
-
-            for i in range(n):
- 
                 p = program.copy()
-                if program.name == "elwise_linear":   
-                    for arg in p.args:
-                        if arg.name == "nelements":
-                            nelem = split_points[i+1] - split_points[i]
-                            arg.tags.value = nelem
+                #if program.name == "elwise_linear":   
+                for arg in p.args:
+                    if arg.name == "nelements" and arg.tags is not None:
+                        nelem = split_points[i+1] - split_points[i]
+                        arg.tags.value = nelem
 
                 p = self.transform_loopy_program(p)
                 program_list.append(p)
 
             # Create separate views of input and output arrays
+            kwargs_list = []
             start = 0
             for i in range(n):
+                # make separate kwargs for each n
+                kwargs_list.append(kwargs.copy())  
                 start = split_points[i]
                 end = split_points[i+1]
-                for name in dof_array_names:
-                    kwargs_list[i][name] = kwargs[name][start:end,:]
+                for (name, tag) in dof_array_names.items():
+                    if isinstance(tag, IsDOFArray):
+                        kwargs_list[i][name] = kwargs[name][start:end,:]
+                    # This is more complicated because the there are arrays inside arrays
+                    # and we need a new outer array filled with references to views of the original
+                    #inner array
+                    elif isinstance(tag, IsVecDOFArray):
+                        # Create new outer array
+                        naxes = kwargs[name].shape[0]
+                        kwargs_list[i][name] = make_obj_array([kwargs[name][axis][start:end,:] for axis in range(naxes)])
 
             # Dispatch the tasks to each queue
             result_list = []
             evt_list = []
             queue_count = len(self.queues)
             for i in range(n):
+                #print(program_list[i])
                 evt, result = program_list[i](self.queues[i % queue_count], **kwargs_list[i], allocator=self.allocator)
                 evt_list.append(evt)
                 result_list.append(result)
-
-            
 
             #for i in range(n):
             #    print(result_list[i])
@@ -533,6 +540,4 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 program = lp.fix_parameters(program, **{arg.name: arg.tags.value})
         return program
 
- 
-    
 # vim: foldmethod=marker
