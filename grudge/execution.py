@@ -49,7 +49,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 MPI_TAG_SEND_TAGS = 1729
-#from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa: F401
+from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2  # noqa: F401
 
 
 ResultType = Union[DOFArray, Number]
@@ -99,7 +99,6 @@ def diff_prg(n_mat, n_elem, n_in, n_out, fp_format=np.float32,
     # This should be in array context probably but need to avoid circular dependency
     # Probably should split kernels out of grudge_array_context
     knl = lp.tag_inames(knl, "imatrix: ilp")
-    result = lp.fix_parameters(knl, nmatrices=n_mat)
     knl = lp.tag_array_axes(knl, "result", "sep,c,c")
     return knl
 
@@ -660,7 +659,7 @@ class ExecutionMapper(mappers.Evaluator,
 
     # }}}
 
-# }}}
+ # }}}
 
 
 # {{{ futures
