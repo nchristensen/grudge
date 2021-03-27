@@ -500,7 +500,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 start = split_points[i]
                 end = split_points[i+1]
                 for name in dof_array_names:
-                    kwargs_list[i-1][name] = kwargs[name][start:end,:]
+                    kwargs_list[i][name] = kwargs[name][start:end,:]
 
             # Dispatch the tasks to each queue
             result_list = []
