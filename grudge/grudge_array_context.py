@@ -35,6 +35,46 @@ def get_order_from_dofs(dofs):
     dofs_to_order = {10: 2, 20: 3, 35: 4, 56: 5, 84: 6, 120: 7}
     return dofs_to_order[dofs]
 
+def calc_bandwidth_usage(dt, program, result, kwargs):
+    dt = dt / 1e9
+    nbytes = 0
+    if program.name == "resample_by_mat":
+        n_to_nodes, n_from_nodes = kwargs["resample_mat"].shape
+        nbytes = (kwargs["to_element_indices"].shape[0]*n_to_nodes +
+                    n_to_nodes*n_from_nodes +
+                    kwargs["from_element_indices"].shape[0]*n_from_nodes) * 8
+    elif program.name == "resample_by_picking":
+        # Double check this
+        nbytes = kwargs["pick_list"].shape[0] * (kwargs["from_element_indices"].shape[0]
+                    + kwargs["to_element_indices"].shape[0])*8
+    else:
+        #print(kwargs.keys())
+        for key, val in kwargs.items():
+            # output may be a list of pyopenclarrays or it could be a 
+            # pyopenclarray. This prevents double counting (allowing
+            # other for-loop to count the bytes in the former case)
+            if key not in result.keys(): 
+                try: 
+                    nbytes += prod(val.shape)*8
+                    #print(val.shape)
+                except AttributeError:
+                    nbytes += 0 # Or maybe 1*8 if this is a scalar
+            #print(nbytes)
+        #print("Output")
+        #print(result.keys())
+        for val in result.values():
+            try:
+                nbytes += prod(val.shape)*8
+                #print(val.shape)
+            except AttributeError:
+                nbytes += 0 # Or maybe this is a scalar?
+
+    bw = nbytes / dt / 1e9
+
+
+    print("Kernel {}, Time {}, Bytes {}, Bandwidth {}".format(program.name, dt, nbytes, bw))
+
+
 class GrudgeArrayContext(PyOpenCLArrayContext):
 
     def empty(self, shape, dtype):
@@ -47,6 +87,7 @@ class GrudgeArrayContext(PyOpenCLArrayContext):
 
     def thaw(self, array):
         thawed = super().thaw(array)
+        # Is the below necessary?
         if type(getattr(array, "tags", None)) == IsDOFArray:
             cq = thawed.queue
             # Should this be run through the array context
@@ -226,12 +267,15 @@ class GrudgeArrayContext(PyOpenCLArrayContext):
             dt = evt.profile.end - evt.profile.start
         dt = dt / 1e9
 
-        nbytes = 0
         # Could probably just use program.args but maybe all
         # parameters are not set
 
         #print("Input")
 
+        calc_bandwidth_usage(dt, program, kwargs)
+
+        '''
+        nbytes = 0
         if program.name == "resample_by_mat":
             n_to_nodes, n_from_nodes = kwargs["resample_mat"].shape
             nbytes = (kwargs["to_element_indices"].shape[0]*n_to_nodes +
@@ -267,7 +311,7 @@ class GrudgeArrayContext(PyOpenCLArrayContext):
 
 
         print("Kernel {}, Time {}, Bytes {}, Bandwidth {}".format(program.name, dt, nbytes, bw))
-       
+        '''
         #if "opt_diff" in program.name: 
         #    exit()
         return evt, result
@@ -367,14 +411,14 @@ class GrudgeArrayContext(PyOpenCLArrayContext):
 
 class BaseNumpyArrayContext(ArrayContext):
 
-    #def __init__(self):
-    #    super().__init__()
+    def __init__(self, order="C"):
+        super().__init__()
 
     def empty(self, shape, dtype):
-        return np.empty(shape, dtype=dtype)
+        return np.empty(shape, dtype=dtype, order="C")
 
     def zeros(self, shape, dtype):
-        return np.zeros(shape, dtype=dtype)
+        return np.zeros(shape, dtype=dtype, order="C")
 
     def from_numpy(self, np_array: np.ndarray):
         return np_array
@@ -398,9 +442,9 @@ class BaseNumpyArrayContext(ArrayContext):
 
 class MultipleDispatchArrayContext(BaseNumpyArrayContext):
     
-    def __init__(self, queues, allocator=None, wait_event_queue_length=None):
+    def __init__(self, queues, order="C", allocator=None, wait_event_queue_length=None):
 
-        super().__init__()
+        super().__init__(order=order)
         self.queues = queues
         self.contexts = (queue.context for queue in queues)
         self.allocator = allocator if allocator else None
@@ -410,7 +454,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         #    wait_event_queue_length = 10
 
     def call_loopy(self, program, **kwargs):
-
+        print(program.name)
         # No code transformations enabled at this point
         #program = self.transform_loopy_program(program)
         
@@ -458,7 +502,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     "face_mass"]
 
         if program.name not in excluded:
-            print(program.name)
+            #print(program.name)
             n = 4 # Total number of tasks to dole out round-robin to queues
 
             dof_array_names = {}
@@ -512,10 +556,15 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             evt_list = []
             queue_count = len(self.queues)
             for i in range(n):
-                #print(program_list[i])
                 evt, result = program_list[i](self.queues[i % queue_count], **kwargs_list[i], allocator=self.allocator)
                 evt_list.append(evt)
                 result_list.append(result)
+
+            cl.wait_for_events(evt_list)
+            for evt in evt_list:
+                dt = evt.profile.end - evt.profile.start
+                calc_bandwidth_usage(dt, program_list[i], result_list[i], kwargs_list[i])
+
 
             #for i in range(n):
             #    print(result_list[i])
@@ -528,6 +577,10 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         else:
             program = self.transform_loopy_program(program)
             evt, result = program(self.queues[0], **kwargs, allocator=self.allocator)
+            evt.wait()
+            dt = evt.profile.end - evt.profile.start
+            calc_bandwidth_usage(dt, program, result, kwargs)
+
             return evt, result        
 
     # Somehow memoization cannot detect changes in tags

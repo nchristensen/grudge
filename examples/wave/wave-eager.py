@@ -113,18 +113,19 @@ def bump(actx, discr, t=0):
 
 
 def main():
+    nqueues = 1
     queues = []
-    for i in range(2):
+    for i in range(nqueues):
         cl_ctx = cl.create_some_context()
         queue = cl.CommandQueue(cl_ctx, properties=cl.command_queue_properties.PROFILING_ENABLE)
         queues.append(queue)
     from pyopencl.tools import ImmediateAllocator
     #TODO: Fix allocator
     #actx = MultipleDispatchArrayContext([queue], allocator=ImmediateAllocator(queue))
-    actx = MultipleDispatchArrayContext(queues, allocator=None)
+    actx = MultipleDispatchArrayContext(queues, order="F", allocator=None)
 
     dim = 3
-    nel_1d = 16#2**5
+    nel_1d = 2**6#16#2**5
     from meshmode.mesh.generation import generate_regular_rect_mesh
     mesh = generate_regular_rect_mesh(
             coord_dtype=np.float64,
@@ -158,7 +159,7 @@ def main():
         return wave_operator(discr, c=1, w=w)
 
     t = 0
-    t_final = 3*dt
+    t_final = 1*dt
     istep = 0
     while t < t_final:
         fields = rk4_step(fields, t, dt, rhs)
