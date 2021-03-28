@@ -4,7 +4,7 @@ from pytools.obj_array import make_obj_array
 import loopy as lp
 import pyopencl.array as cla
 import grudge.loopy_dg_kernels as dgk
-from grudge.grudge_tags import IsDOFArray, IsVecDOFArray, IsFaceDOFArray, IsOpArray, IsVecOpArray, ParameterValue
+from grudge.grudge_tags import IsDOFArray, IsVecDOFArray, IsFaceDOFArray, IsVecOpArray, ParameterValue
 from numpy import prod
 import hjson
 import numpy as np
@@ -635,7 +635,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             #       - Merge the results after execution
 
             result_name = list(result.keys())[0]
-            if result_name in kwargs:
+            if result_name in kwargs:  
                 result = kwargs[result_name]
                 return evt, result
             elif "diff" in program.name:
@@ -658,6 +658,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             #    print(val.flags["F"])
 
             evt, result = program(self.queues[0], **kwargs, allocator=self.allocator)
+
             #for key, val in kwargs.items():
             #    print(key)
             #    print(val.shape)
@@ -689,6 +690,13 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         for arg in program.args:
             if isinstance(arg.tags, ParameterValue):
                 program = lp.fix_parameters(program, **{arg.name: arg.tags.value})
+            # Fortran ordering is not possible with numpy array slicing because the
+            # slices become discontinuous and PyOpenCL cannot load them to the GPU
+            # We either need transformations for the element-contiguous case
+            # or need to divide the arrays into contiguous blocks (harder to 
+            # implement and makes dynamic work division hard.
+            # The GPU performance is problably limited by the PCI express bandwidth
+            # in any case so maybe this is not needed.
             """
             elif isinstance(arg.tags, IsDOFArray):
                 program = lp.tag_array_axes(program, arg.name, "f,f")
@@ -696,8 +704,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 program = lp.tag_array_axes(program, arg.name, "sep,f,f")
             elif isinstance(arg.tags, IsVecOpArray):
                 program = lp.tag_array_axes(program, arg.name, "sep,c,c")
-            elif isinstance(arg.tags, IsOpArray):
-                program = lp.tag_array_axes(program, arg.name, "c,c")
             elif isinstance(arg.tags, IsFaceDOFArray):
                 program = lp.tag_array_axes(program, arg.name, "N1,N0,N2")
             """
