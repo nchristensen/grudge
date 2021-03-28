@@ -4,10 +4,11 @@ from pytools.obj_array import make_obj_array
 import loopy as lp
 import pyopencl.array as cla
 import grudge.loopy_dg_kernels as dgk
-from grudge.grudge_tags import IsDOFArray, IsVecDOFArray, IsFaceDOFArray, IsVecOpArray, ParameterValue
+from grudge.grudge_tags import IsDOFArray, IsVecDOFArray, IsFaceDOFArray, IsOpArray, IsVecOpArray, ParameterValue
 from numpy import prod
 import hjson
 import numpy as np
+import time
 
 #from grudge.loopy_dg_kernels.run_tests import analyzeResult
 import pyopencl as cl
@@ -36,7 +37,7 @@ def get_order_from_dofs(dofs):
     return dofs_to_order[dofs]
 
 def calc_bandwidth_usage(dt, program, result, kwargs):
-    dt = dt / 1e9
+    #dt = dt / 1e9
     nbytes = 0
     if program.name == "resample_by_mat":
         n_to_nodes, n_from_nodes = kwargs["resample_mat"].shape
@@ -412,25 +413,39 @@ class GrudgeArrayContext(PyOpenCLArrayContext):
 class BaseNumpyArrayContext(ArrayContext):
 
     def __init__(self, order="C"):
+        self.order = order
         super().__init__()
 
     def empty(self, shape, dtype):
-        return np.empty(shape, dtype=dtype, order="C")
+        return np.empty(shape, dtype=dtype, order=self.order)
 
     def zeros(self, shape, dtype):
-        return np.zeros(shape, dtype=dtype, order="C")
+        return np.zeros(shape, dtype=dtype, order=self.order)
 
+    # Is this supposed to return a desired ordering?
+    # If so, the input arrays need flags to distinguish
+    # operators (c,c) from DOF arrays (f,f).
     def from_numpy(self, np_array: np.ndarray):
         return np_array
 
     def to_numpy(self, np_array: np.ndarray):
         return np_array
+        #return np.array(np_array, order=self.order)
 
     def freeze(self, np_array: np.ndarray):
         return np_array
+        #return np.array(np_array, order=self.order)
 
     def thaw(self, np_array: np.ndarray):
+        #print(self.order)
         return np_array
+        #return np.asfortranarray(np_array)
+        #return np.array(np_array, order=self.order)
+        #print(np_array.tags)
+        #if isinstance(np_array.tags, IsDOFArray):
+        #    return np.array(np_array, order=self.order)
+        #else:
+        #    return np.array(np_array)
 
     #def call_loopy(self, program, **kwargs):
     #    program = self.transform_loopy_program(program)
@@ -533,6 +548,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 program_list.append(p)
 
             # Create separate views of input and output arrays
+            # This assumes the output is in kwargs but that is not necessarily the case
             kwargs_list = []
             start = 0
             for i in range(n):
@@ -554,16 +570,51 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             # Dispatch the tasks to each queue
             result_list = []
             evt_list = []
+            times = []
             queue_count = len(self.queues)
             for i in range(n):
+                start_time = time.time()
+                '''
+                for key, val in kwargs_list[i].items():
+                    print(key)
+                    print(val.shape)
+                    print(val.flags["F"])
+                '''
+
                 evt, result = program_list[i](self.queues[i % queue_count], **kwargs_list[i], allocator=self.allocator)
+                # evt times apparently do not cover transfers to and from device
+                self.queues[i % queue_count].finish() # Comment during end-to-end timing
+                dt = time.time() - start_time
+
+                #print("Kwargs")
+                #for key, val in kwargs.items():
+                #    print(key)
+                #    print(val.shape)
+                #    #print(val.flags["F"])
+
+                #print("Result")
+                #for key, val in result.items():
+                #    print(key)
+                #    print(val.shape)
+                #    #print(val.flags["F"])
+                
+
                 evt_list.append(evt)
                 result_list.append(result)
 
-            cl.wait_for_events(evt_list)
-            for evt in evt_list:
-                dt = evt.profile.end - evt.profile.start
+                # If the output / result is in kwargs then can return that
+                # If it is not then either need to add it to kwargs or 
+                # Combine the results
+  
                 calc_bandwidth_usage(dt, program_list[i], result_list[i], kwargs_list[i])
+    
+           
+
+
+            #cl.wait_for_events(evt_list)
+            #for evt in evt_list:
+            #    dt = evt.profile.end - evt.profile.start # Add the division back into calc_bandwidth_usage
+            #    calc_bandwidth_usage(dt/1e9, program_list[i], result_list[i], kwargs_list[i])
 
 
             #for i in range(n):
@@ -572,14 +623,60 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             #print(kwargs["out"])
             #print(np.sum(result["out"] - result2["out"))
             #exit()
-            return evt, result        
+            # This should return a combined result, not a single result
+
+            # This will fail for the differentiation kernel
+            # There are three cases
+            # 1: The output array is in kwargs with views in kwargs_list. If so, return that. (Done below).
+            # 2: The output is a IsVecDOF. Then create a new dictionary with kwargs["result"][:]
+            # with keys result0, result1, result2.
+            # 3: The output is not in kwargs. If so, then either
+            #       - Add it to kwargs (before creating kwargs_list
+            #       - Merge the results after execution
+
+            result_name = list(result.keys())[0]
+            if result_name in kwargs:
+                result = kwargs[result_name]
+                return evt, result
+            elif "diff" in program.name:
+                # Doesn't really matter, the argument rather than the return value is used 
+                # in the calling function
+                d = {}
+                for i, array in enumerate(kwargs["result"]):
+                    d["result_s{}".format(i)] = array
+                return evt, d
+            else: 
+                print("ERROR: Result view is not in kwarg. See above for what to do. (probably)")
+                exit()
 
         else:
             program = self.transform_loopy_program(program)
+
+            #for key, val in kwargs.items():
+            #    print(key)
+            #    print(val.shape)
+            #    print(val.flags["F"])
+
             evt, result = program(self.queues[0], **kwargs, allocator=self.allocator)
+            #for key, val in kwargs.items():
+            #    print(key)
+            #    print(val.shape)
+            #    print(val.flags["F"])
+            #for key, val in result.items():
+            #    print(key)
+            #    print(val.shape)
+            #    print(val.flags["F"])
+
+
+
+
+
             evt.wait()
+            # Does not include host->device, device->host transfer time
             dt = evt.profile.end - evt.profile.start
-            calc_bandwidth_usage(dt, program, result, kwargs)
+            # This measures the bandwidth after the data reaches the GPU, not
+            # The host <-> device transfers
+            calc_bandwidth_usage(dt/1e9, program, result, kwargs)
 
             return evt, result        
 
@@ -588,9 +685,100 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
     def transform_loopy_program(self, program):
         # Move this into transform code
         program = lp.set_options(program, no_numpy=False)
+
         for arg in program.args:
             if isinstance(arg.tags, ParameterValue):
                 program = lp.fix_parameters(program, **{arg.name: arg.tags.value})
+            """
+            elif isinstance(arg.tags, IsDOFArray):
+                program = lp.tag_array_axes(program, arg.name, "f,f")
+            elif isinstance(arg.tags, IsVecDOFArray):
+                program = lp.tag_array_axes(program, arg.name, "sep,f,f")
+            elif isinstance(arg.tags, IsVecOpArray):
+                program = lp.tag_array_axes(program, arg.name, "sep,c,c")
+            elif isinstance(arg.tags, IsOpArray):
+                program = lp.tag_array_axes(program, arg.name, "c,c")
+            elif isinstance(arg.tags, IsFaceDOFArray):
+                program = lp.tag_array_axes(program, arg.name, "N1,N0,N2")
+            """
+
+        # Copied from GrudgeArrayContext
+        # Should move this to separate file probably
+        device_id = "NVIDIA Titan V"
+        # This read could be slow
+        transform_id = get_transformation_id(device_id)
+
+        if "diff" in program.name:
+
+            #program = lp.set_options(program, "write_cl")
+            # TODO: Dynamically determine device id,
+            # Rename this file
+            pn = -1
+            fp_format = None
+            dim = -1
+            for arg in program.args:
+                if arg.name == "diff_mat":
+                    dim = arg.shape[0]
+                    pn = get_order_from_dofs(arg.shape[2])                    
+                    fp_format = arg.dtype.numpy_dtype
+                    break
+
+            hjson_file = pkg_resources.open_text(dgk, "diff_{}d_transform.hjson".format(dim))
+
+            # FP format is very specific. Could have integer arrays?
+            # What about mixed data types?
+            #if pn <= 0 or not isinstance(fp_format, :
+                #print("Need to specify a polynomial order and data type")
+                # Should throw an error
+                #exit()
+
+            # Probably need to generalize this
+            fp_string = get_fp_string(fp_format)
+            indices = [transform_id, fp_string, str(pn)]
+            transformations = dgk.load_transformations_from_file(hjson_file,
+                indices)#transform_id, fp_string, pn)
+            hjson_file.close()
+            program = dgk.apply_transformation_list(program, transformations)
+
+
+            # Print the Code
+            """
+            platform = cl.get_platforms()
+            my_gpu_devices = platform[1].get_devices(device_type=cl.device_type.GPU)
+            #ctx = cl.create_some_context(interactive=True)
+            ctx = cl.Context(devices=my_gpu_devices)
+            kern = program.copy(target=lp.PyOpenCLTarget(my_gpu_devices[0]))
+            code = lp.generate_code_v2(kern).device_code()
+            prog = cl.Program(ctx, code)
+            prog = prog.build()
+            ptx = prog.get_info(cl.program_info.BINARIES)[0]#.decode(
+            #errors="ignore") #Breaks pocl
+            from bs4 import UnicodeDammit
+            dammit = UnicodeDammit(ptx)
+            print(dammit.unicode_markup)
+            print(program.options)
+            exit()
+            """
+        elif "elwise_linear" in program.name:
+            hjson_file = pkg_resources.open_text(dgk, "elwise_linear_transform.hjson")
+            pn = -1
+            fp_format = None
+            for arg in program.args:
+                if arg.name == "mat":
+                    pn = get_order_from_dofs(arg.shape[1])                    
+                    fp_format = arg.dtype.numpy_dtype
+                    break
+
+            fp_string = get_fp_string(fp_format)
+            indices = [transform_id, fp_string, str(pn)]
+            transformations = dgk.load_transformations_from_file(hjson_file,
+                indices)
+            hjson_file.close()
+            program = dgk.apply_transformation_list(program, transformations)
+        elif "actx_special" in program.name:
+            program = lp.split_iname(program, "i0", 512, outer_tag="g.0",
+                                        inner_tag="l.0", slabs=(0, 1))
+
         return program
 
 # vim: foldmethod=marker
