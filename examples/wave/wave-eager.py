@@ -122,14 +122,14 @@ def main():
         cl_ctx = cl.create_some_context()
         queue = cl.CommandQueue(cl_ctx, properties=cl.command_queue_properties.PROFILING_ENABLE)
         queues.append(queue)
-        allocators = None
-        #allocators.append(ImmediateAllocator(queue))
+        #allocators = None
+        allocators.append(ImmediateAllocator(queue))
     #TODO: Fix allocator
     #actx = MultipleDispatchArrayContext([queue], allocator=ImmediateAllocator(queue))
     actx = MultipleDispatchArrayContext(queues, order="C", allocators=allocators)
 
     dim = 3
-    nel_1d = 4#2**5#16#2**5
+    nel_1d = 2**5#16#2**5
     from meshmode.mesh.generation import generate_regular_rect_mesh
     mesh = generate_regular_rect_mesh(
             coord_dtype=np.float64,

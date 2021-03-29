@@ -415,7 +415,9 @@ class BaseNumpyArrayContext(ArrayContext):
         super().__init__()
 
     def empty(self, shape, dtype):
-        return np.empty(shape, dtype=dtype, order=self.order)
+        # Ease debugging, changing this temporarily
+        return np.zeros(shape, dtype=dtype, order=self.order)
+        #return np.empty(shape, dtype=dtype, order=self.order)
 
     def zeros(self, shape, dtype):
         return np.zeros(shape, dtype=dtype, order=self.order)
@@ -533,9 +535,9 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         excluded = ["nodes", "resample_by_picking", 
                     "grudge_assign_0", "grudge_assign_2", 
                     "grudge_assign_1", "resample_by_mat",
-                    "face_mass", "flatten", "diff_1_axis", "diff_2_axis", "diff_3_axis", "elwise_linear"]
+                    "face_mass", "flatten"]
 
-        if False:#program.name not in excluded:
+        if program.name not in excluded:
             #print(program.name)
             n = 1 # Total number of tasks to dole out round-robin to queues
 
@@ -564,7 +566,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                         arg.tags.value = nelem
 
 
-                p = lp.set_options(program, no_numpy=False)
+                p = lp.set_options(program, no_numpy=True)
                 p = self.transform_loopy_program(p)
                 program_list.append(p)
 
@@ -598,10 +600,10 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 queue = self.queues[i % queue_count]
                 start_time = time.process_time()
                 
-                '''               
+                #'''               
                 # Transfer data to device asynchronously 
                 td_start = time.process_time()
-                cl_dict =  async_transfer_args_to_device(program.args, kwargs_list[i], queue, self.allocator)
+                cl_dict =  async_transfer_args_to_device(program.args, kwargs_list[i], queue, self.allocators[i])
                 cl.enqueue_barrier(queue)
                 #queue.finish()                
                 td_dt = time.process_time() - td_start
@@ -609,18 +611,18 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
  
                 # Hopefully this waits for the transfers to complete before launching and then runs asynchronously
                 te_start = time.process_time()
-                evt, result = program_list[i](queue, **cl_dict, allocator=self.allocator)
+                evt, result = program_list[i](queue, **cl_dict, allocator=self.allocators[i])
                 cl.enqueue_barrier(queue)
                 #queue.finish()
                 evt.wait()
                 
                 te_dt = time.process_time() - te_start
                 print("Execution time: {}".format(te_dt))
-                '''
+                #'''
 
-                evt, result = program_list[i](queue, **kwargs_list[i], allocator=self.allocator[i])
+                #evt, result = program_list[i](queue, **kwargs_list[i], allocator=self.allocators[i])
 
-                '''
+                #'''
                 # Transfer data back asynchronously
                 th_start = time.process_time()
                 async_transfer_args_to_host(program.args, cl_dict, kwargs_list[i], queue) 
@@ -628,7 +630,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 #queue.finish()
                 th_dt = time.process_time() - th_start
                 print("Transfer to host: {}".format(th_dt))
-                '''
+                #'''
 
                 # evt times apparently do not cover transfers to and from device
                 #queue.finish() # Comment during end-to-end timing
@@ -680,6 +682,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 exit()
 
         else:
+
             program = lp.set_options(program, no_numpy=False)
             program = self.transform_loopy_program(program)
             evt, result = program(self.queues[0], **kwargs, allocator=self.allocators[0])
@@ -689,12 +692,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             dt = evt.profile.end - evt.profile.start
             calc_bandwidth_usage(dt/1e9, program, result, kwargs)
 
-            from numpy.linalg import norm
-            for key, val in kwargs.items():
-                print("{} {}".format(key,norm(val)))
-            for key, val in result.items():
-                print("{} {}".format(key,norm(val)))
- 
             return evt, result        
 
     # Somehow memoization cannot detect changes in tags
@@ -730,7 +727,9 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         # This read could be slow
         transform_id = get_transformation_id(device_id)
 
-        if "diff" in program.name:
+        # Turn off these code transformations for now. They cause nans in 
+        # the two axis diff kernel
+        if False: #diff" in program.name:
 
             # TODO: Dynamically determine device id,
             pn = -1
@@ -752,7 +751,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             hjson_file.close()
             program = dgk.apply_transformation_list(program, transformations)
 
-        elif "elwise_linear" in program.name:
+        elif False:#"elwise_linear" in program.name:
             hjson_file = pkg_resources.open_text(dgk, "elwise_linear_transform.hjson")
             pn = -1
             fp_format = None
