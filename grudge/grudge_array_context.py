@@ -113,8 +113,6 @@ class GrudgeArrayContext(PyOpenCLArrayContext):
             elif isinstance(arg.tags, ParameterValue):
                 program = lp.fix_parameters(program, **{arg.name: arg.tags.value})
 
-        # Set no_numpy and return_dict options here?
-
         device_id = "NVIDIA Titan V"
         # This read could be slow
         transform_id = get_transformation_id(device_id)
@@ -455,70 +453,91 @@ class BaseNumpyArrayContext(ArrayContext):
     #def transform_loopy_program(self, program):
     #    pass
 
+
+def async_transfer_args_to_device(program_args, kwargs, queue, allocator):
+    cl_dict = {} # Transfer data to device asynchronously
+    for arg in program_args:
+        # Should probably do this even if they aren't, it will pre-allocate the output arrays then
+        # But size is not necessarily known? Will fixing the parameters make the size known?
+        if arg.name in kwargs:           
+            key = arg.name
+            if arg.is_output_only: # Output arrays only need to be allocated
+                if isinstance(arg.tags, IsVecDOFArray):
+                    obj_array_np = kwargs[key]
+                    obj_array_cl = []
+                    for np_a in obj_array_np:
+                        cl_a = cla.empty(queue, np_a.shape, np_a.dtype, allocator=allocator)
+                        obj_array_cl.append(cl_a)
+                    cl_dict[key] = make_obj_array(obj_array_cl)
+                else:
+                    cl_dict[key] = cla.empty(queue, kwargs[key].shape, kwargs[key].dtype, allocator=allocator)
+            else:
+                if isinstance(arg.tags, IsVecDOFArray):
+                    obj_array_np = kwargs[key]
+                    obj_array_cl = []
+                    for np_a in obj_array_np:
+                        obj_array_cl.append(cla.to_device(queue, np_a, allocator=allocator, async_=True))
+                    cl_dict[key] = make_obj_array(obj_array_cl)
+                else:
+                    cl_dict[key] = cla.to_device(queue, kwargs[key], allocator=allocator, async_=True)
+
+    return cl_dict
+
+# Assume output args are in kwargs
+def async_transfer_args_to_host(program_args, cl_dict, kwargs, queue):
+
+    cnt = 0
+    for arg in program_args:
+        if arg.is_output_only:
+            cnt += 1
+    if cnt == 0:
+        print("Cannot determine output argument")
+        exit()
+
+    for arg in program_args:
+        # This won't work if the input is also the output, but I don't think any kernels re-use arrays
+        if arg.is_output_only:
+            if arg.name in kwargs:
+                key = arg.name
+                if isinstance(arg.tags, IsVecDOFArray):
+                    for i, entry in enumerate(cl_dict[key]):
+                        cl_dict[key][i].get_async(queue=queue, ary=kwargs[key][i])
+                else:
+                    cl_dict[key].get_async(queue=queue, ary=kwargs[key])
+            else:
+                print("The output arg is not in kwargs. This case is not currently handled.")
+                exit()
+
+    return kwargs
+
+
 class MultipleDispatchArrayContext(BaseNumpyArrayContext):
     
-    def __init__(self, queues, order="C", allocator=None, wait_event_queue_length=None):
+    def __init__(self, queues, order="C", allocators=None, wait_event_queue_length=None):
 
         super().__init__(order=order)
         self.queues = queues
         self.contexts = (queue.context for queue in queues)
-        self.allocator = allocator if allocator else None
+        if allocators is None:
+            self.allocators = [None for i in range(len(queues))]
+        else:
+            self.allocators = allocators
 
         # TODO add queue length stuff as needed
         #if wait_event_queue_length is None:
         #    wait_event_queue_length = 10
 
     def call_loopy(self, program, **kwargs):
-        print(program.name)
-        # No code transformations enabled at this point
-        #program = self.transform_loopy_program(program)
-        
         #print(program.name)
-        #print(kwargs)
-        #for arg in kwargs.values():
-        #    #if isinstance(arg, np.ndarray):
-        #    #    setattr(arg, "offset", 0)
-        #    print(type(arg))
-        #print(program)
-        #print(program.options)
-
-        # Move this into transform code
-        #program = lp.set_options(program, no_numpy=False)
-        #for arg in program.args:
-        #    if isinstance(arg.tags, ParameterValue):
-        #        program = lp.fix_parameters(program, **{arg.name: arg.tags.value})
-
-
-        #exit()
-
-        # If it has a DOF Array, then split the dof array into two or more viewed and execute with each view
-        # What about any loop bounds. Do they need to be reassigned?
-        # Loopy limits, maybe use fix_parameters to adjust?
-        # Experiment with sqrt function first
-
-        """
-        has_dof_array = False
-        has_vec_dof_array = False
-        has_face_dof_array = False
-        for arg in program.args:
-            if isinstance(arg.tags, IsDOFArray):
-                has_dof_array = True
-            elif isinstance(arg.tags, VecIsDOFArray):
-                has_vec_dof_array = True
-            elif isinstance(arg.tags, FaceIsDOFArray):
-                has_face_dof_array = True
-            #pass
-            #print(arg.tags)
-        """
 
         excluded = ["nodes", "resample_by_picking", 
                     "grudge_assign_0", "grudge_assign_2", 
                     "grudge_assign_1", "resample_by_mat",
-                    "face_mass"]
+                    "face_mass", "flatten", "diff_1_axis", "diff_2_axis", "diff_3_axis", "elwise_linear"]
 
-        if program.name not in excluded:
+        if False:#program.name not in excluded:
             #print(program.name)
-            n = 4 # Total number of tasks to dole out round-robin to queues
+            n = 1 # Total number of tasks to dole out round-robin to queues
 
             dof_array_names = {}
             for arg in program.args:
@@ -544,6 +563,8 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                         nelem = split_points[i+1] - split_points[i]
                         arg.tags.value = nelem
 
+
+                p = lp.set_options(program, no_numpy=False)
                 p = self.transform_loopy_program(p)
                 program_list.append(p)
 
@@ -572,43 +593,61 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             evt_list = []
             times = []
             queue_count = len(self.queues)
+            
             for i in range(n):
-                start_time = time.time()
-                '''
-                for key, val in kwargs_list[i].items():
-                    print(key)
-                    print(val.shape)
-                    print(val.flags["F"])
-                '''
-
-                evt, result = program_list[i](self.queues[i % queue_count], **kwargs_list[i], allocator=self.allocator)
-                # evt times apparently do not cover transfers to and from device
-                self.queues[i % queue_count].finish() # Comment during end-to-end timing
-                dt = time.time() - start_time
-
-                #print("Kwargs")
-                #for key, val in kwargs.items():
-                #    print(key)
-                #    print(val.shape)
-                #    #print(val.flags["F"])
-
-                #print("Result")
-                #for key, val in result.items():
-                #    print(key)
-                #    print(val.shape)
-                #    #print(val.flags["F"])
+                queue = self.queues[i % queue_count]
+                start_time = time.process_time()
                 
+                '''               
+                # Transfer data to device asynchronously 
+                td_start = time.process_time()
+                cl_dict =  async_transfer_args_to_device(program.args, kwargs_list[i], queue, self.allocator)
+                cl.enqueue_barrier(queue)
+                #queue.finish()                
+                td_dt = time.process_time() - td_start
+                print("Transfer to device: {}".format(td_dt))
+ 
+                # Hopefully this waits for the transfers to complete before launching and then runs asynchronously
+                te_start = time.process_time()
+                evt, result = program_list[i](queue, **cl_dict, allocator=self.allocator)
+                cl.enqueue_barrier(queue)
+                #queue.finish()
+                evt.wait()
+                
+                te_dt = time.process_time() - te_start
+                print("Execution time: {}".format(te_dt))
+                '''
 
-                evt_list.append(evt)
+                evt, result = program_list[i](queue, **kwargs_list[i], allocator=self.allocator[i])
+
+                '''
+                # Transfer data back asynchronously
+                th_start = time.process_time()
+                async_transfer_args_to_host(program.args, cl_dict, kwargs_list[i], queue) 
+                cl.enqueue_barrier(queue)
+                #queue.finish()
+                th_dt = time.process_time() - th_start
+                print("Transfer to host: {}".format(th_dt))
+                '''
+
+                # evt times apparently do not cover transfers to and from device
+                #queue.finish() # Comment during end-to-end timing
+                cl.enqueue_barrier(queue)
+                dt = time.process_time() - start_time
+
+                evt_list.append(evt) # Does not measure transfer time
                 result_list.append(result)
+                evt.wait()
 
                 # If the output / result is in kwargs then can return that
                 # If it is not then either need to add it to kwargs or 
                 # Combine the results
-  
+ 
                 calc_bandwidth_usage(dt, program_list[i], result_list[i], kwargs_list[i])
-    
-           
+
+                print("Kernel time from queued: {}".format( (evt.profile.end - evt.profile.queued)/1e9))
+                print("Kernel time from submitted: {}".format( (evt.profile.end - evt.profile.submit)/1e9))
+                print("Kernel time from started: {}".format( (evt.profile.end - evt.profile.start)/1e9))
 
 
             #cl.wait_for_events(evt_list)
@@ -616,21 +655,12 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             #    dt = evt.profile.end - evt.profile.start # Add the division back into calc_bandwidth_usage
             #    calc_bandwidth_usage(dt/1e9, program_list[i], result_list[i], kwargs_list[i])
 
-
-            #for i in range(n):
-            #    print(result_list[i])
-            # kwargs["out"] should be completely filled by both operations
-            #print(kwargs["out"])
-            #print(np.sum(result["out"] - result2["out"))
-            #exit()
-            # This should return a combined result, not a single result
-
             # This will fail for the differentiation kernel
             # There are three cases
             # 1: The output array is in kwargs with views in kwargs_list. If so, return that. (Done below).
             # 2: The output is a IsVecDOF. Then create a new dictionary with kwargs["result"][:]
             # with keys result0, result1, result2.
-            # 3: The output is not in kwargs. If so, then either
+            # 3: The output is not in kwargs (none of the allowed kernels have this yet). If so, then either
             #       - Add it to kwargs (before creating kwargs_list
             #       - Merge the results after execution
 
@@ -650,43 +680,29 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 exit()
 
         else:
+            program = lp.set_options(program, no_numpy=False)
             program = self.transform_loopy_program(program)
+            evt, result = program(self.queues[0], **kwargs, allocator=self.allocators[0])
 
-            #for key, val in kwargs.items():
-            #    print(key)
-            #    print(val.shape)
-            #    print(val.flags["F"])
-
-            evt, result = program(self.queues[0], **kwargs, allocator=self.allocator)
-
-            #for key, val in kwargs.items():
-            #    print(key)
-            #    print(val.shape)
-            #    print(val.flags["F"])
-            #for key, val in result.items():
-            #    print(key)
-            #    print(val.shape)
-            #    print(val.flags["F"])
-
-
-
-
-
-            evt.wait()
             # Does not include host->device, device->host transfer time
+            evt.wait()
             dt = evt.profile.end - evt.profile.start
-            # This measures the bandwidth after the data reaches the GPU, not
-            # The host <-> device transfers
             calc_bandwidth_usage(dt/1e9, program, result, kwargs)
 
+            from numpy.linalg import norm
+            for key, val in kwargs.items():
+                print("{} {}".format(key,norm(val)))
+            for key, val in result.items():
+                print("{} {}".format(key,norm(val)))
+ 
             return evt, result        
 
     # Somehow memoization cannot detect changes in tags
     #@memoize_method
     def transform_loopy_program(self, program):
         # Move this into transform code
-        program = lp.set_options(program, no_numpy=False)
 
+        program = lp.set_options(program, "return_dict")
         for arg in program.args:
             if isinstance(arg.tags, ParameterValue):
                 program = lp.fix_parameters(program, **{arg.name: arg.tags.value})
@@ -716,9 +732,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
         if "diff" in program.name:
 
-            #program = lp.set_options(program, "write_cl")
             # TODO: Dynamically determine device id,
-            # Rename this file
             pn = -1
             fp_format = None
             dim = -1
@@ -731,14 +745,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
             hjson_file = pkg_resources.open_text(dgk, "diff_{}d_transform.hjson".format(dim))
 
-            # FP format is very specific. Could have integer arrays?
-            # What about mixed data types?
-            #if pn <= 0 or not isinstance(fp_format, :
-                #print("Need to specify a polynomial order and data type")
-                # Should throw an error
-                #exit()
-
-            # Probably need to generalize this
             fp_string = get_fp_string(fp_format)
             indices = [transform_id, fp_string, str(pn)]
             transformations = dgk.load_transformations_from_file(hjson_file,
@@ -746,25 +752,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             hjson_file.close()
             program = dgk.apply_transformation_list(program, transformations)
 
-
-            # Print the Code
-            """
-            platform = cl.get_platforms()
-            my_gpu_devices = platform[1].get_devices(device_type=cl.device_type.GPU)
-            #ctx = cl.create_some_context(interactive=True)
-            ctx = cl.Context(devices=my_gpu_devices)
-            kern = program.copy(target=lp.PyOpenCLTarget(my_gpu_devices[0]))
-            code = lp.generate_code_v2(kern).device_code()
-            prog = cl.Program(ctx, code)
-            prog = prog.build()
-            ptx = prog.get_info(cl.program_info.BINARIES)[0]#.decode(
-            #errors="ignore") #Breaks pocl
-            from bs4 import UnicodeDammit
-            dammit = UnicodeDammit(ptx)
-            print(dammit.unicode_markup)
-            print(program.options)
-            exit()
-            """
         elif "elwise_linear" in program.name:
             hjson_file = pkg_resources.open_text(dgk, "elwise_linear_transform.hjson")
             pn = -1
@@ -781,6 +768,8 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 indices)
             hjson_file.close()
             program = dgk.apply_transformation_list(program, transformations)
+
+        # This is terrible for the element-contiguous layout
         elif "actx_special" in program.name:
             program = lp.split_iname(program, "i0", 512, outer_tag="g.0",
                                         inner_tag="l.0", slabs=(0, 1))

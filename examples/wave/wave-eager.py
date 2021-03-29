@@ -26,6 +26,7 @@ import numpy.linalg as la  # noqa
 import pyopencl as cl
 
 from pytools.obj_array import flat_obj_array
+from pyopencl.tools import ImmediateAllocator
 
 from grudge.grudge_array_context import GrudgeArrayContext, MultipleDispatchArrayContext
 from meshmode.array_context import PyOpenCLArrayContext  # noqa F401
@@ -105,6 +106,7 @@ def bump(actx, discr, t=0):
         for i in range(discr.dim)
         ])
 
+
     return (
         np.cos(source_omega*t)
         * actx.np.exp(
@@ -113,19 +115,21 @@ def bump(actx, discr, t=0):
 
 
 def main():
-    nqueues = 2
+    nqueues = 1
     queues = []
+    allocators = []
     for i in range(nqueues):
         cl_ctx = cl.create_some_context()
         queue = cl.CommandQueue(cl_ctx, properties=cl.command_queue_properties.PROFILING_ENABLE)
         queues.append(queue)
-    from pyopencl.tools import ImmediateAllocator
+        allocators = None
+        #allocators.append(ImmediateAllocator(queue))
     #TODO: Fix allocator
     #actx = MultipleDispatchArrayContext([queue], allocator=ImmediateAllocator(queue))
-    actx = MultipleDispatchArrayContext(queues, order="F", allocator=None)
+    actx = MultipleDispatchArrayContext(queues, order="C", allocators=allocators)
 
     dim = 3
-    nel_1d = 2**6#16#2**5
+    nel_1d = 4#2**5#16#2**5
     from meshmode.mesh.generation import generate_regular_rect_mesh
     mesh = generate_regular_rect_mesh(
             coord_dtype=np.float64,
