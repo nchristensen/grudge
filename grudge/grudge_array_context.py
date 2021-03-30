@@ -538,8 +538,8 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     "face_mass", "flatten"]
 
         if program.name not in excluded:
-            #print(program.name)
-            n = 1 # Total number of tasks to dole out round-robin to queues
+            print(program.name)
+            n = len(self.queues) # Total number of tasks to dole out round-robin to queues
 
             dof_array_names = {}
             for arg in program.args:
@@ -595,7 +595,8 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             evt_list = []
             times = []
             queue_count = len(self.queues)
-            
+
+            loop_start = time.process_time()            
             for i in range(n):
                 queue = self.queues[i % queue_count]
                 start_time = time.process_time()
@@ -604,37 +605,37 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 # Transfer data to device asynchronously 
                 td_start = time.process_time()
                 cl_dict =  async_transfer_args_to_device(program.args, kwargs_list[i], queue, self.allocators[i])
-                cl.enqueue_barrier(queue)
-                #queue.finish()                
+                #cl.enqueue_barrier(queue)
+                queue.finish()                
                 td_dt = time.process_time() - td_start
                 print("Transfer to device: {}".format(td_dt))
  
                 # Hopefully this waits for the transfers to complete before launching and then runs asynchronously
                 te_start = time.process_time()
                 evt, result = program_list[i](queue, **cl_dict, allocator=self.allocators[i])
-                cl.enqueue_barrier(queue)
-                #queue.finish()
-                evt.wait()
+                #cl.enqueue_barrier(queue)
+                queue.finish()
                 
                 te_dt = time.process_time() - te_start
                 print("Execution time: {}".format(te_dt))
                 #'''
 
-                #evt, result = program_list[i](queue, **kwargs_list[i], allocator=self.allocators[i])
+                # Original execution method
+                ##evt, result = program_list[i](queue, **kwargs_list[i], allocator=self.allocators[i])
 
                 #'''
                 # Transfer data back asynchronously
                 th_start = time.process_time()
                 async_transfer_args_to_host(program.args, cl_dict, kwargs_list[i], queue) 
-                cl.enqueue_barrier(queue)
-                #queue.finish()
+                #cl.enqueue_barrier(queue)
+                queue.finish()
                 th_dt = time.process_time() - th_start
                 print("Transfer to host: {}".format(th_dt))
                 #'''
 
                 # evt times apparently do not cover transfers to and from device
-                #queue.finish() # Comment during end-to-end timing
-                cl.enqueue_barrier(queue)
+                queue.finish() # Comment during end-to-end timing
+                #cl.enqueue_barrier(queue)
                 dt = time.process_time() - start_time
 
                 evt_list.append(evt) # Does not measure transfer time
@@ -647,10 +648,20 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
  
                 calc_bandwidth_usage(dt, program_list[i], result_list[i], kwargs_list[i])
 
+                #print("Queue {} done".format(i))
                 print("Kernel time from queued: {}".format( (evt.profile.end - evt.profile.queued)/1e9))
                 print("Kernel time from submitted: {}".format( (evt.profile.end - evt.profile.submit)/1e9))
                 print("Kernel time from started: {}".format( (evt.profile.end - evt.profile.start)/1e9))
 
+                # I'm pretty certain this is not occurring asynchronously. If it was, the loop times should
+                # be similar. They actually resemble the execution time so I think they are not.
+                print(time.process_time() - start_time)
+        
+            for queue in self.queues:
+                queue.finish()
+
+            dt_loop = time.process_time() - loop_start
+            print("Loop time: {}".format(dt_loop))            
 
             #cl.wait_for_events(evt_list)
             #for evt in evt_list:

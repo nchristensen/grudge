@@ -89,6 +89,7 @@ def wave_operator(discr, c, w):
 
 def rk4_step(y, t, h, f):
     k1 = f(t, y)
+    exit()
     k2 = f(t+h/2, y + h/2*k1)
     k3 = f(t+h/2, y + h/2*k2)
     k4 = f(t+h, y + h*k3)
@@ -116,9 +117,27 @@ def bump(actx, discr, t=0):
 
 def main():
     nqueues = 1
+
     queues = []
+    """
+    # Invalid context for some reason
+    devices = []
+    # Modify this for Dunkel
+    for platform in cl.get_platforms():
+        for device in platform.get_devices():
+            devices.append(device)
+            cl_ctx = cl.Context(devices=[device])
+            queue = cl.CommandQueue(cl_ctx, device=device, properties=cl.command_queue_properties.PROFILING_ENABLE)
+            queues.append(queue)
+    devices.reverse()
+    print(devices)
+    queues.reverse()
+    print(queues)
+    """
+
     allocators = []
     for i in range(nqueues):
+        #queue = cl.CommandQueue(cl_ctx, device=devices[i])
         cl_ctx = cl.create_some_context()
         queue = cl.CommandQueue(cl_ctx, properties=cl.command_queue_properties.PROFILING_ENABLE)
         queues.append(queue)
@@ -129,7 +148,7 @@ def main():
     actx = MultipleDispatchArrayContext(queues, order="C", allocators=allocators)
 
     dim = 3
-    nel_1d = 2**5#16#2**5
+    nel_1d = 2**6#16#2**5
     from meshmode.mesh.generation import generate_regular_rect_mesh
     mesh = generate_regular_rect_mesh(
             coord_dtype=np.float64,
