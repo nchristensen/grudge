@@ -99,7 +99,9 @@ def diff_prg(n_mat, n_elem, n_in, n_out, fp_format=np.float32,
     # This should be in array context probably but need to avoid circular dependency
     # Probably should split kernels out of grudge_array_context
     knl = lp.tag_inames(knl, "imatrix: ilp")
-    #knl = lp.tag_array_axes(knl, "result", "sep,f,f")
+    # For PyOpenCLArrayContext
+    knl = lp.tag_array_axes(knl, "result", "sep,c,c")
+    knl = lp.tag_array_axes(knl, "diff_mat", "sep,c,c")
     return knl
 
 
@@ -573,7 +575,17 @@ class ExecutionMapper(mappers.Evaluator,
         assignments = []
         for name, expr in zip(insn.names, insn.exprs):
             value = self.rec(expr)
+            #print("&&&&&&&&&&&&&&&&&&&&&&&")
+            #print(type(value))
+            #print(type(value._data))
+            #for v in value._data:
+            #    print(type(v))
+            #    print(v.shape)
+            #exit()
             self.discrwb._discr_scoped_subexpr_name_to_value[name] = value
+            #print("$$$$$$$$$$$$$$$$$$$$$$$$$$$")
+            #print(type(self.discrwb._discr_scoped_subexpr_name_to_value))
+            #exit()
             assignments.append((name, value))
 
         return assignments, []
@@ -600,9 +612,12 @@ class ExecutionMapper(mappers.Evaluator,
         in_discr = self.discrwb.discr_from_dd(repr_op.dd_in)
         out_discr = self.discrwb.discr_from_dd(repr_op.dd_out)
 
-        result = make_obj_array([
-            out_discr.empty(self.array_context, dtype=field.entry_dtype)
-            for idim in range(noperators)])
+        empties = [out_discr.empty(self.array_context, dtype=field.entry_dtype) for idim in range(noperators)]
+
+        result = make_obj_array(empties)
+        #result = make_obj_array((
+        #    out_discr.empty(self.array_context, dtype=field.entry_dtype)1
+        #    for idim in range(noperators)))
 
         for in_grp, out_grp in zip(in_discr.groups, out_discr.groups):
             if in_grp.nelements == 0:
@@ -762,19 +777,26 @@ class BoundOperator:
                 (result_var.name not in
                     self.discrwb._discr_scoped_subexpr_name_to_value)
                 for result_var in self.discr_code.result):
+
             # need to do discrwb-scope evaluation
             discrwb_eval_context: Dict[str, ResultType] = {}
-            self.discr_code.execute(
-                    self.exec_mapper_factory(
-                        array_context, discrwb_eval_context, self))
+
+            # The factory here is just the ExecutionMapper class
+            # This takes an array context, an empty dict, and self (a BoundOperator)
+            mapper = self.exec_mapper_factory(array_context, discrwb_eval_context, self)
+            self.discr_code.execute(mapper)
+            #self.discr_code.execute(
+            #        self.exec_mapper_factory(
+            #            array_context, discrwb_eval_context, self))
 
         # }}}
 
-        return self.eval_code.execute(
+        result = self.eval_code.execute(
                 self.exec_mapper_factory(array_context, context, self),
                 profile_data=profile_data,
                 log_quantities=log_quantities)
 
+        return result
 # }}}
 
 

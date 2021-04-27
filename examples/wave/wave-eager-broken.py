@@ -75,7 +75,7 @@ def print_allocated_arrays(id_lower_bound=0):
     print('=====Condensed version==========')
     cdict = {}
     for id, (stack, size) in Array.alloc_dict.items():
-        stack_frag = tuple(stack[:])
+        stack_frag = tuple(stack[:6])
         if stack_frag not in cdict:
             cdict[stack_frag] = np.array((size, 1))
         else:
@@ -102,6 +102,7 @@ def wave_operator(discr, c, w):
         u = w[0]
         v = w[1:]
 
+        """
         dir_u = discr.project("vol", BTAG_ALL, u)
         dir_v = discr.project("vol", BTAG_ALL, v)
         dir_bval = flat_obj_array(dir_u, dir_v)
@@ -122,25 +123,17 @@ def wave_operator(discr, c, w):
 
         trace_pair1 = interior_trace_pair(discr, w)
         wave_flux1 = wave_flux(discr, c=c, w_tpair=trace_pair1)
-        del trace_pair1
+        #del trace_pair1
 
         trace_pair2 = TracePair(BTAG_ALL, interior=dir_bval, exterior=dir_bc)
         wave_flux2 = wave_flux(discr, c=c, w_tpair=trace_pair2)
-        del trace_pair2
-        del dir_bc
-        del neg_dir_u
-        del dir_v
-        del dir_bval
+        #del trace_pair2
+        #del dir_bc
+        #del neg_dir_u
+        #del dir_v
+        #del dir_bval
 
         wave_flux_sum = wave_flux1 + wave_flux2;
-        """
-        print("####################")
-        print(type(wave_flux_sum))
-        for entry in wave_flux_sum:
-            print(type(entry))
-            print(entry._data.shape)
-        """
-
         del wave_flux1
         del wave_flux2
 
@@ -148,27 +141,14 @@ def wave_operator(discr, c, w):
         del wave_flux_sum
 
         inverse_arg = obj_array + face_mass
-        """
-        print("@@@@@@@@@@@@@@@@@@@@@")
-        print(type(inverse_arg))
-        for entry in inverse_arg:
-            print(type(entry))
-            print(type(entry._data))
-            print(len(entry._data))
-            print(entry._data[0].shape)
-        exit()
-        """
-
         del obj_array
         del face_mass
         del neg_c_div
         del neg_c_grad
 
-        result = discr.inverse_mass(inverse_arg)
-        del inverse_arg
-
+        inverse_mass = discr.inverse_mass(inverse_arg)
         """
-        # Original version
+
         dir_u = discr.project("vol", BTAG_ALL, u)
         dir_v = discr.project("vol", BTAG_ALL, v)
         dir_bval = flat_obj_array(dir_u, dir_v)
@@ -187,7 +167,6 @@ def wave_operator(discr, c, w):
                             BTAG_ALL, interior=dir_bval, exterior=dir_bc))
                         ))
                     )
-        """
 
         from time import sleep
         sleep(3)
@@ -196,17 +175,13 @@ def wave_operator(discr, c, w):
         scoped = discr._discr_scoped_subexpr_name_to_value
         print(len(scoped.items()))
         print(scoped.keys())
-        sum = 0
         for value in scoped.values():
             #print(type(value))
-            if isinstance(value._data, tuple):
-                for entry in value._data:
+            if isinstance(value, tuple):
+                for entry in tuple:
                     print(entry.shape)
-                    sum += entry.shape[0]*entry.shape[1]*8
             else:
                 print(value._data.shape)
-                sum += value._data.shape[0]*value_data.shape[1]*8
-        print(sum / 1e9)
         exit()
 
     except MemoryError:

@@ -37,12 +37,23 @@ def get_order_from_dofs(dofs):
 class GrudgeArrayContext(PyOpenCLArrayContext):
 
     def empty(self, shape, dtype):
+        al = self.allocator
+        print("Active GB: {}".format(al.active_bytes/1e9))
+        print("Active GB: {}".format(al.active_bytes/1e9))
         return cla.empty(self.queue, shape=shape, dtype=dtype,
                 allocator=self.allocator, order="F")
 
     def zeros(self, shape, dtype):
+        al = self.allocator
+        print("Active GB: {}".format(al.active_bytes/1e9))
         return cla.zeros(self.queue, shape=shape, dtype=dtype,
                 allocator=self.allocator, order="F")
+
+    def from_numpy(self, array): 
+        al = self.allocator
+        print("Active GB: {}".format(al.active_bytes/1e9))
+        print("Active GB: {}".format(al.active_bytes/1e9))
+        return super().from_numpy(array)
 
     def thaw(self, array):
         thawed = super().thaw(array)
