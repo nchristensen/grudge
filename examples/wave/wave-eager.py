@@ -196,7 +196,7 @@ def main():
                         ("v", fields[1:]),
                         ])
 
-        t += dt
+        t = dt*istep
         istep += 1
 
 

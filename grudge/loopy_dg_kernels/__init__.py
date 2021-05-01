@@ -321,7 +321,8 @@ def apply_transformation_list(knl, transformations):
                         "prioritize_loops": lp.prioritize_loops,
                         "rename_iname": lp.rename_iname,
                         "tag_array_axes": lp.tag_array_axes,
-                        "tag_inames": lp.tag_inames}
+                        "tag_inames": lp.tag_inames,
+                        "buffer_array": lp.buffer_array}
 
     # Maybe add some logic to add slabs=(0,0) if n_elem % k_inner_outer == 0
     # Maybe can do this based on tranformation name, loop variable, and loop variable
