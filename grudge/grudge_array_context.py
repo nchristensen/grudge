@@ -461,6 +461,8 @@ def async_transfer_args_to_device(program_args, kwargs, queue, allocator):
     for arg in program_args:
         # Should probably do this even if they aren't, it will pre-allocate the output arrays then
         # But size is not necessarily known? Will fixing the parameters make the size known?
+
+        print(arg.name)
         if arg.name in kwargs:           
             key = arg.name
             if arg.is_output_only: # Output arrays only need to be allocated
@@ -468,21 +470,28 @@ def async_transfer_args_to_device(program_args, kwargs, queue, allocator):
                     obj_array_np = kwargs[key]
                     obj_array_cl = []
                     for np_a in obj_array_np:
+                        print("Creatng empty 1")
                         cl_a = cla.empty(queue, np_a.shape, np_a.dtype, allocator=allocator)
+                        print("array created")
                         obj_array_cl.append(cl_a)
                     cl_dict[key] = make_obj_array(obj_array_cl)
                 else:
+                    print("Creating empty2 ")
                     cl_dict[key] = cla.empty(queue, kwargs[key].shape, kwargs[key].dtype, allocator=allocator)
+                    print("here")
             else:
                 if isinstance(arg.tags, IsVecDOFArray):
                     obj_array_np = kwargs[key]
                     obj_array_cl = []
                     for np_a in obj_array_np:
-                        obj_array_cl.append(cla.to_device(queue, np_a, allocator=allocator, async_=True))
+                        print("Copying to device")
+                        obj_array_cl.append(cla.to_device(queue, np_a, allocator=allocator, async_=False))
                     cl_dict[key] = make_obj_array(obj_array_cl)
                 else:
-                    cl_dict[key] = cla.to_device(queue, kwargs[key], allocator=allocator, async_=True)
-
+                    print("async")
+                    
+                    cl_dict[key] = cla.to_device(queue, kwargs[key], allocator=allocator, async_=False)
+                    print("done")
     return cl_dict
 
 # Assume output args are in kwargs
@@ -512,6 +521,92 @@ def async_transfer_args_to_host(program_args, cl_dict, kwargs, queue):
 
     return kwargs
 
+var_dict = {}
+def init_worker(queues, allocators, program_list, kwargs_list):
+    var_dict["queues"] = queues
+    var_dict["allocators"] = allocators
+    var_dict["program_list"] = program_list
+    var_dict["kwargs_list"] = kwargs_list
+    #var_dict["devices"] = [queue.device for queue in queues]
+
+def f(args):
+
+    #"""
+    #print("HERE I AM 1")
+    ##(queue, allocator, program, kwargs) = args
+    i = args[0]
+    #platform_id, device_id = args[1]
+
+    queue = var_dict["queues"][i]
+    allocator = var_dict["allocators"][i]
+    program = var_dict["program_list"][i]
+    kwargs = var_dict["kwargs_list"][i]
+    ##device = var_dict["devices"][i]
+    start_time = time.process_time()
+    #"""
+
+    print("HERE I AM 2")
+    #print(platform_id)
+    #import pyopencl as cl
+    #platforms = cl.get_platforms()
+    # For some reason CUDA platform does not work
+    # Maybe try with PoCL Cuda
+    #platform = platforms[1]
+    #devices = platform.get_devices()
+    #print(devices)
+
+    #'''               
+    # Transfer data to device asynchronously 
+    td_start = time.process_time()
+
+    print("HERE I AM 2.1")
+    print(queue)
+    
+    #platform
+    #print(var_dict["devices"][i])
+      
+    #print(queue.device)
+    new_context = cl.Context(devices=[queue.device])
+    print("HERE")
+    print(new_context)
+    new_queue = cl.CommandQueue(new_context, device=queue.device)
+    print(new_queue)
+    print("HERE")
+    #exit()
+    #return
+
+    from pyopencl.tools import ImmediateAllocator
+    alloc = ImmediateAllocator(new_queue)
+    cl_dict =  async_transfer_args_to_device(program.args, kwargs, new_queue, alloc)
+    return
+    """
+    print("HERE I AM 2.2")
+    #cl.enqueue_barrier(queue)
+   # queue.finish()      
+          
+    print("HERE I AM 2.3")
+    td_dt = time.process_time() - td_start
+    print(f"Process {i}: Transfer to device: {td_dt}")
+
+    print("HERE I AM 3")
+    te_start = time.process_time()
+    evt, result = program(queue, **cl_dict, allocator=allocator)
+    queue.finish()
+    
+    print("HERE I AM 4")
+    te_dt = time.process_time() - te_start
+    print("Process {i} Execution time: {te_dt}")
+
+    print("HERE I AM 5")
+    #'''
+    """
+    # Original execution method
+    #print(program.name)
+    #evt, result = program(new_queue, **kwargs)
+    #print("HERE I AM 6")
+
+    # Most of the time the cl_dict is more important than the result
+    return (evt, result, cl_dict)
 
 class MultipleDispatchArrayContext(BaseNumpyArrayContext):
     
@@ -566,7 +661,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                         arg.tags.value = nelem
 
 
-                p = lp.set_options(program, no_numpy=True)
+                p = lp.set_options(program, no_numpy=False)
                 p = self.transform_loopy_program(p)
                 program_list.append(p)
 
@@ -596,15 +691,49 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             times = []
             queue_count = len(self.queues)
 
+
+            #Execute and transfer back to host              
+
             loop_start = time.process_time()            
-            for i in range(n):
+            from multiprocessing import Pool
+
+            initargs = [self.queues, self.allocators, program_list, kwargs_list]
+            #with Pool(n) as pool:
+            with Pool(processes=n, initializer=init_worker, initargs=initargs) as pool:
+                #args = []
+                device_ids = []
+                for i in range(n):
+                    device = self.queues[i].device
+                    platform = device.platform
+                    platform_id = cl.get_platforms().index(platform)
+                    device_id = platform.get_devices().index(device)
+                    device_ids.append((platform_id, device_id))
+
+                args  = [[i, device_ids[i]] for i in range(n)]
+                print("HERE") 
+                output_list = pool.map(f, args)
+                print("HERE")
+                exit()
+                # Have host merge results
+                print(len(output_list))
+                print(len(output_list[0]))
+                for i in range(n):
+                    # May need to use returned queues instead
+                    queue = self.queues[i % queue_count] 
+                    async_transfer_args_to_host(program.args, output_list[i][2], kwargs_list[i], queue) 
+            exit()
+
+            '''
+            #for i in range(n):
+ 
                 queue = self.queues[i % queue_count]
                 start_time = time.process_time()
                 
-                #'''               
+                #"""              
                 # Transfer data to device asynchronously 
                 td_start = time.process_time()
                 cl_dict =  async_transfer_args_to_device(program.args, kwargs_list[i], queue, self.allocators[i])
+                cl_dict_list.append(cl_dict)
                 #cl.enqueue_barrier(queue)
                 queue.finish()                
                 td_dt = time.process_time() - td_start
@@ -618,25 +747,31 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 
                 te_dt = time.process_time() - te_start
                 print("Execution time: {}".format(te_dt))
-                #'''
+
+                #"""
 
                 # Original execution method
                 ##evt, result = program_list[i](queue, **kwargs_list[i], allocator=self.allocators[i])
 
-                #'''
+                #"""
                 # Transfer data back asynchronously
                 th_start = time.process_time()
+
+                # This will have to be done by the host for each cl_dict
                 async_transfer_args_to_host(program.args, cl_dict, kwargs_list[i], queue) 
+
                 #cl.enqueue_barrier(queue)
                 queue.finish()
                 th_dt = time.process_time() - th_start
                 print("Transfer to host: {}".format(th_dt))
-                #'''
+                #"""
 
                 # evt times apparently do not cover transfers to and from device
                 queue.finish() # Comment during end-to-end timing
                 #cl.enqueue_barrier(queue)
                 dt = time.process_time() - start_time
+
+                 
 
                 evt_list.append(evt) # Does not measure transfer time
                 result_list.append(result)
@@ -656,6 +791,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 # I'm pretty certain this is not occurring asynchronously. If it was, the loop times should
                 # be similar. They actually resemble the execution time so I think they are not.
                 print(time.process_time() - start_time)
+                '''
         
             for queue in self.queues:
                 queue.finish()
