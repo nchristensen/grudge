@@ -470,28 +470,20 @@ def async_transfer_args_to_device(program_args, kwargs, queue, allocator):
                     obj_array_np = kwargs[key]
                     obj_array_cl = []
                     for np_a in obj_array_np:
-                        print("Creatng empty 1")
                         cl_a = cla.empty(queue, np_a.shape, np_a.dtype, allocator=allocator)
-                        print("array created")
                         obj_array_cl.append(cl_a)
                     cl_dict[key] = make_obj_array(obj_array_cl)
                 else:
-                    print("Creating empty2 ")
                     cl_dict[key] = cla.empty(queue, kwargs[key].shape, kwargs[key].dtype, allocator=allocator)
-                    print("here")
             else:
                 if isinstance(arg.tags, IsVecDOFArray):
                     obj_array_np = kwargs[key]
                     obj_array_cl = []
                     for np_a in obj_array_np:
-                        print("Copying to device")
-                        obj_array_cl.append(cla.to_device(queue, np_a, allocator=allocator, async_=False))
+                        obj_array_cl.append(cla.to_device(queue, np_a, allocator=allocator, async_=True))
                     cl_dict[key] = make_obj_array(obj_array_cl)
-                else:
-                    print("async")
-                    
-                    cl_dict[key] = cla.to_device(queue, kwargs[key], allocator=allocator, async_=False)
-                    print("done")
+                else:                
+                    cl_dict[key] = cla.to_device(queue, kwargs[key], allocator=allocator, async_=True)
     return cl_dict
 
 # Assume output args are in kwargs
@@ -693,8 +685,10 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
 
             #Execute and transfer back to host              
-
             loop_start = time.process_time()            
+
+            """
+            # Broken multiprocessing code
             from multiprocessing import Pool
 
             initargs = [self.queues, self.allocators, program_list, kwargs_list]
@@ -722,9 +716,11 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     queue = self.queues[i % queue_count] 
                     async_transfer_args_to_host(program.args, output_list[i][2], kwargs_list[i], queue) 
             exit()
+            """
 
-            '''
-            #for i in range(n):
+            # Break into three separate for loops
+            # Transfer to device, kernel launch, transfer to host
+            for i in range(n):
  
                 queue = self.queues[i % queue_count]
                 start_time = time.process_time()
@@ -733,7 +729,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 # Transfer data to device asynchronously 
                 td_start = time.process_time()
                 cl_dict =  async_transfer_args_to_device(program.args, kwargs_list[i], queue, self.allocators[i])
-                cl_dict_list.append(cl_dict)
                 #cl.enqueue_barrier(queue)
                 queue.finish()                
                 td_dt = time.process_time() - td_start
@@ -771,8 +766,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 #cl.enqueue_barrier(queue)
                 dt = time.process_time() - start_time
 
-                 
-
                 evt_list.append(evt) # Does not measure transfer time
                 result_list.append(result)
                 evt.wait()
@@ -791,7 +784,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 # I'm pretty certain this is not occurring asynchronously. If it was, the loop times should
                 # be similar. They actually resemble the execution time so I think they are not.
                 print(time.process_time() - start_time)
-                '''
         
             for queue in self.queues:
                 queue.finish()
