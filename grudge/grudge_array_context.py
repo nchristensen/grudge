@@ -75,7 +75,6 @@ def calc_bandwidth_usage(dt, program, result, kwargs):
 
     print("Kernel {}, Time {}, Bytes {}, Bandwidth {}".format(program.name, dt, nbytes, bw))
 
-
 class GrudgeArrayContext(PyOpenCLArrayContext):
 
     def empty(self, shape, dtype):
@@ -720,74 +719,85 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
             # Break into three separate for loops
             # Transfer to device, kernel launch, transfer to host
+            start_times = []
+            cl_dicts = []
+
+            report_performance = True
+
+            # Transfer data to devices asynchronously 
             for i in range(n):
  
                 queue = self.queues[i % queue_count]
-                start_time = time.process_time()
-                
-                #"""              
-                # Transfer data to device asynchronously 
+                start_times.append(time.process_time())                
                 td_start = time.process_time()
-                cl_dict =  async_transfer_args_to_device(program.args, kwargs_list[i], queue, self.allocators[i])
-                #cl.enqueue_barrier(queue)
-                queue.finish()                
-                td_dt = time.process_time() - td_start
-                print("Transfer to device: {}".format(td_dt))
- 
-                # Hopefully this waits for the transfers to complete before launching and then runs asynchronously
-                te_start = time.process_time()
-                evt, result = program_list[i](queue, **cl_dict, allocator=self.allocators[i])
-                #cl.enqueue_barrier(queue)
-                queue.finish()
-                
-                te_dt = time.process_time() - te_start
-                print("Execution time: {}".format(te_dt))
 
-                #"""
+                cl_dict =  async_transfer_args_to_device(program.args, kwargs_list[i], queue, self.allocators[i])
+                cl_dicts.append(cl_dict)
+
+                # Comment this when testing overall performance 
+                if report_performance:
+                    queue.finish()                
+                    td_dt = time.process_time() - td_start
+                    print("Transfer to device: {}".format(td_dt))
+
+            # Execute
+            for i in range(n):
+
+                queue = self.queues[i % queue_count]
+                te_start = time.process_time()
+
+                # Hopefully this waits for the transfers to complete before launching and then runs asynchronously
+                evt, result = program_list[i](queue, **cl_dicts[i], allocator=self.allocators[i])
+                evt_list.append(evt) 
+                result_list.append(result)
+
+                if report_performance:                
+                    queue.finish()
+                    te_dt = time.process_time() - te_start
+                    print("Execution time: {}".format(te_dt))
 
                 # Original execution method
                 ##evt, result = program_list[i](queue, **kwargs_list[i], allocator=self.allocators[i])
 
-                #"""
-                # Transfer data back asynchronously
+            # Transfer data back asynchronously
+            for i in range(n):
+
+                queue = self.queues[i % queue_count]
                 th_start = time.process_time()
 
-                # This will have to be done by the host for each cl_dict
-                async_transfer_args_to_host(program.args, cl_dict, kwargs_list[i], queue) 
+                async_transfer_args_to_host(program.args, cl_dicts[i], kwargs_list[i], queue) 
 
-                #cl.enqueue_barrier(queue)
-                queue.finish()
-                th_dt = time.process_time() - th_start
-                print("Transfer to host: {}".format(th_dt))
-                #"""
+                if report_performance:
+                    queue.finish()
+                    th_dt = time.process_time() - th_start
+                    print("Transfer to host: {}".format(th_dt))
+
+                # This may not be a useful bandwidth number. It would probably be better to
+                # calculate the to and from device bandwidths separately from the
+                # computation. The python code in between may make the results look
+                # worse than they otherwise would have anyway.
+                if report_performance: 
+                    queue.finish()
+                    dt = time.process_time() - start_times[i]
+                    calc_bandwidth_usage(dt, program_list[i], result_list[i], kwargs_list[i])
+
 
                 # evt times apparently do not cover transfers to and from device
-                queue.finish() # Comment during end-to-end timing
-                #cl.enqueue_barrier(queue)
-                dt = time.process_time() - start_time
-
-                evt_list.append(evt) # Does not measure transfer time
-                result_list.append(result)
-                evt.wait()
-
-                # If the output / result is in kwargs then can return that
-                # If it is not then either need to add it to kwargs or 
-                # Combine the results
- 
-                calc_bandwidth_usage(dt, program_list[i], result_list[i], kwargs_list[i])
-
-                #print("Queue {} done".format(i))
-                print("Kernel time from queued: {}".format( (evt.profile.end - evt.profile.queued)/1e9))
-                print("Kernel time from submitted: {}".format( (evt.profile.end - evt.profile.submit)/1e9))
-                print("Kernel time from started: {}".format( (evt.profile.end - evt.profile.start)/1e9))
+                if report_performance:
+                    evt = evt_list[i]
+                    evt.wait()
+                    print("Kernel time from queued: {}".format( (evt.profile.end - evt.profile.queued)/1e9))
+                    print("Kernel time from submitted: {}".format( (evt.profile.end - evt.profile.submit)/1e9))
+                    print("Kernel time from started: {}".format( (evt.profile.end - evt.profile.start)/1e9))
 
                 # I'm pretty certain this is not occurring asynchronously. If it was, the loop times should
                 # be similar. They actually resemble the execution time so I think they are not.
-                print(time.process_time() - start_time)
+                #print(time.process_time() - start_time)
         
             for queue in self.queues:
                 queue.finish()
 
+            # This number is meaningless when other calls to queue.finish exist inside the loops.
             dt_loop = time.process_time() - loop_start
             print("Loop time: {}".format(dt_loop))            
 
@@ -795,6 +805,10 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             #for evt in evt_list:
             #    dt = evt.profile.end - evt.profile.start # Add the division back into calc_bandwidth_usage
             #    calc_bandwidth_usage(dt/1e9, program_list[i], result_list[i], kwargs_list[i])
+
+            # If the output / result is in kwargs then can return that
+            # If it is not then either need to add it to kwargs or 
+            # Combine the results
 
             # This will fail for the differentiation kernel
             # There are three cases
@@ -805,6 +819,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             #       - Add it to kwargs (before creating kwargs_list
             #       - Merge the results after execution
 
+            # Fix the result return value
             result_name = list(result.keys())[0]
             if result_name in kwargs:  
                 result = kwargs[result_name]
