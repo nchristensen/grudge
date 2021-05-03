@@ -618,7 +618,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
     def call_loopy(self, program, **kwargs):
         #print(program.name)
 
-        excluded = ["nodes", "resample_by_picking", 
+        excluded = ["nodes","resample_by_picking", 
                     "grudge_assign_0", "grudge_assign_2", 
                     "grudge_assign_1", "resample_by_mat",
                     "face_mass", "flatten"]
@@ -629,12 +629,15 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
             dof_array_names = {}
             for arg in program.args:
-                if isinstance(arg.tags, IsDOFArray):
-                    nelem = kwargs[arg.name].shape[0]
-                    dof_array_names[arg.name] = arg.tags
-                elif isinstance(arg.tags, IsVecDOFArray):
-                    nelem = kwargs[arg.name][0].shape[0]
-                    dof_array_names[arg.name] = arg.tags
+                if arg.name in kwargs:
+                    if isinstance(arg.tags, IsDOFArray):
+                        nelem = kwargs[arg.name].shape[0]
+                        dof_array_names[arg.name] = arg.tags
+                    elif isinstance(arg.tags, IsVecDOFArray):
+                        nelem = kwargs[arg.name][0].shape[0]
+                        dof_array_names[arg.name] = arg.tags
+                    elif arg.name == "nelements" and isinstance(arg.tags, ParameterValue):
+                        nelem = arg.tags.value
             
             split_points = []
             step = nelem // n
@@ -801,6 +804,9 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             dt_loop = time.process_time() - loop_start
             print("Loop time: {}".format(dt_loop))            
 
+            #if program.name == "elwise_linear":
+            #    exit()
+
             #cl.wait_for_events(evt_list)
             #for evt in evt_list:
             #    dt = evt.profile.end - evt.profile.start # Add the division back into calc_bandwidth_usage
@@ -823,15 +829,20 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             result_name = list(result.keys())[0]
             if result_name in kwargs:  
                 result = kwargs[result_name]
-                return evt, result
+                return None, result # There are multiple events so returning one is pointless
             elif "diff" in program.name:
                 # Doesn't really matter, the argument rather than the return value is used 
                 # in the calling function
                 d = {}
                 for i, array in enumerate(kwargs["result"]):
                     d["result_s{}".format(i)] = array
-                return evt, d
+                return None, d
             else: 
+                print(program.name)
+                for arg in program.args:
+                    if arg.is_output_only:
+                        print(arg.name) 
+                #result = np.concatenate([result_list["result"
                 print("ERROR: Result view is not in kwarg. See above for what to do. (probably)")
                 exit()
 
