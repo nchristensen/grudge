@@ -461,7 +461,8 @@ def async_transfer_args_to_device(program_args, kwargs, queue, allocator):
         # Should probably do this even if they aren't, it will pre-allocate the output arrays then
         # But size is not necessarily known? Will fixing the parameters make the size known?
 
-        print(arg.name)
+        #print(arg.name)
+        #print(type(arg))
         if arg.name in kwargs:           
             key = arg.name
             if arg.is_output_only: # Output arrays only need to be allocated
@@ -506,9 +507,9 @@ def async_transfer_args_to_host(program_args, cl_dict, kwargs, queue):
                         cl_dict[key][i].get_async(queue=queue, ary=kwargs[key][i])
                 else:
                     cl_dict[key].get_async(queue=queue, ary=kwargs[key])
-            else:
-                print("The output arg is not in kwargs. This case is not currently handled.")
-                exit()
+            #else:
+            #    print("The output arg is not in kwargs. This case is not currently handled.")
+            #    exit()
 
     return kwargs
 
@@ -618,10 +619,29 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
     def call_loopy(self, program, **kwargs):
         #print(program.name)
 
+        # flatten is only relevant to output
+        # face_mass has strange shape
+        # resample kernels have scattered reads and writes
+        # nodes breaks with parameter values 
         excluded = ["nodes","resample_by_picking", 
-                    "grudge_assign_0", "grudge_assign_2", 
-                    "grudge_assign_1", "resample_by_mat",
+                    #"grudge_assign_0",
+                    #"grudge_assign_2", 
+                    #"grudge_assign_1",
+                    "resample_by_mat",
                     "face_mass", "flatten"]
+
+        if "grudge_assign" in program.name:
+            for arg in program.args:
+                if isinstance(arg, lp.ValueArg):
+                    arg.tags = ParameterValue(kwargs[arg.name])
+                    del kwargs[arg.name]
+                    
+            #for arg in program.args:
+            #    print(arg.name)
+            #    print(type(arg))
+            #print(kwargs.keys())
+            #print([type(i) for i in kwargs.values()])
+            #exit()
 
         if program.name not in excluded:
             print(program.name)
@@ -638,6 +658,12 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                         dof_array_names[arg.name] = arg.tags
                     elif arg.name == "nelements" and isinstance(arg.tags, ParameterValue):
                         nelem = arg.tags.value
+
+            if program.args[0].name not in kwargs:
+                print("Output not in kwargs. Adding it.")
+                # assumes the second argument is a dof array input and the output is the same
+                # shape and type as it
+                kwargs[program.args[0].name] = np.empty_like(kwargs[program.args[1].name])
             
             split_points = []
             step = nelem // n
@@ -648,7 +674,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             program_list = []
             for i in range(n):
                 p = program.copy()
-                #if program.name == "elwise_linear":   
                 for arg in p.args:
                     if arg.name == "nelements" and arg.tags is not None:
                         nelem = split_points[i+1] - split_points[i]
@@ -795,6 +820,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
                 # I'm pretty certain this is not occurring asynchronously. If it was, the loop times should
                 # be similar. They actually resemble the execution time so I think they are not.
+                # --Since changed to separate transfer and execution loops so need to reassess this
                 #print(time.process_time() - start_time)
         
             for queue in self.queues:
@@ -803,9 +829,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             # This number is meaningless when other calls to queue.finish exist inside the loops.
             dt_loop = time.process_time() - loop_start
             print("Loop time: {}".format(dt_loop))            
-
-            #if program.name == "elwise_linear":
-            #    exit()
 
             #cl.wait_for_events(evt_list)
             #for evt in evt_list:
@@ -822,14 +845,14 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             # 2: The output is a IsVecDOF. Then create a new dictionary with kwargs["result"][:]
             # with keys result0, result1, result2.
             # 3: The output is not in kwargs (none of the allowed kernels have this yet). If so, then either
-            #       - Add it to kwargs (before creating kwargs_list
+            #       - Add it to kwargs (before creating kwargs_list) (Done for grudge_assign)
             #       - Merge the results after execution
 
             # Fix the result return value
             result_name = list(result.keys())[0]
             if result_name in kwargs:  
                 result = kwargs[result_name]
-                return None, result # There are multiple events so returning one is pointless
+                return None, {result_name: result} # There are multiple events so returning one is pointless
             elif "diff" in program.name:
                 # Doesn't really matter, the argument rather than the return value is used 
                 # in the calling function
@@ -842,7 +865,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 for arg in program.args:
                     if arg.is_output_only:
                         print(arg.name) 
-                #result = np.concatenate([result_list["result"
+                
                 print("ERROR: Result view is not in kwarg. See above for what to do. (probably)")
                 exit()
 
