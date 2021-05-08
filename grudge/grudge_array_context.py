@@ -649,6 +649,12 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             print(program.name)
             n = len(self.queues) # Total number of tasks to dole out round-robin to queues
 
+            if program.args[0].name not in kwargs:
+                print("Output not in kwargs. Adding it.")
+                # assumes the second argument is a dof array input and the output is the same
+                # shape and type as it
+                kwargs[program.args[0].name] = np.empty_like(kwargs[program.args[1].name]) 
+
             dof_array_names = {}
             for arg in program.args:
                 if arg.name == "nelements" and isinstance(arg.tags, ParameterValue):
@@ -661,12 +667,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                         nelem = kwargs[arg.name][0].shape[0]
                         dof_array_names[arg.name] = arg.tags
 
-            if program.args[0].name not in kwargs:
-                print("Output not in kwargs. Adding it.")
-                # assumes the second argument is a dof array input and the output is the same
-                # shape and type as it
-                kwargs[program.args[0].name] = np.empty_like(kwargs[program.args[1].name])
-            
+           
             split_points = []
             step = nelem // n
             for i in range(n):
