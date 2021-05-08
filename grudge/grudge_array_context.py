@@ -622,11 +622,9 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         # flatten is only relevant to output
         # face_mass has strange shape
         # resample kernels have scattered reads and writes
-        # nodes breaks with parameter values 
-        excluded = ["nodes","resample_by_picking", 
-                    #"grudge_assign_0",
-                    #"grudge_assign_2", 
-                    #"grudge_assign_1",
+        # nodes breaks with fixed parameters
+        excluded = ["nodes",
+                    "resample_by_picking", 
                     "resample_by_mat",
                     "face_mass", "flatten"]
 
@@ -635,6 +633,10 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 if isinstance(arg, lp.ValueArg):
                     arg.tags = ParameterValue(kwargs[arg.name])
                     del kwargs[arg.name]
+        #elif "nodes" == program.name:
+        #    for arg in program.args:
+        #        print(arg.name)
+        #    exit() 
                     
             #for arg in program.args:
             #    print(arg.name)
@@ -649,6 +651,8 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
             dof_array_names = {}
             for arg in program.args:
+                if arg.name == "nelements" and isinstance(arg.tags, ParameterValue):
+                    nelem = arg.tags.value
                 if arg.name in kwargs:
                     if isinstance(arg.tags, IsDOFArray):
                         nelem = kwargs[arg.name].shape[0]
@@ -656,8 +660,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     elif isinstance(arg.tags, IsVecDOFArray):
                         nelem = kwargs[arg.name][0].shape[0]
                         dof_array_names[arg.name] = arg.tags
-                    elif arg.name == "nelements" and isinstance(arg.tags, ParameterValue):
-                        nelem = arg.tags.value
 
             if program.args[0].name not in kwargs:
                 print("Output not in kwargs. Adding it.")
@@ -963,8 +965,10 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
         # This is terrible for the element-contiguous layout
         elif "actx_special" in program.name:
-            program = lp.split_iname(program, "i0", 512, outer_tag="g.0",
+            program = lp.split_iname(program, "i0", 256, outer_tag="g.0",
                                         inner_tag="l.0", slabs=(0, 1))
+        elif "grudge_assign" in program.name:
+            program = lp.split_iname(program, "iel", 256, outer_tag="g.0", inner_tag="l.0", slabs=(0,1))
 
         return program
 
