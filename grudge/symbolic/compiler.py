@@ -1041,6 +1041,7 @@ class ToLoopyInstructionMapper:
         for arg in knl.args:
             if type(arg) == lp.ArrayArg:
                 arg.tags = IsDOFArray()
+        knl.args[0].is_output_only = True
 
         self.insn_count += 1
 

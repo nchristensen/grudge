@@ -90,7 +90,7 @@
 
               # For tests comment this
               ["add_prefetch", ["vec", "j,iel_inner_outer,iel_inner_inner"], {temporary_name: "vecf", default_tag: "l.auto"}],
-              ["tag_array_axes", ["vecf", "f,f"]]
+              ["tag_array_axes", ["vecf", "c,c"]]
               #["buffer_array", ["result", "imatrix,idof,j,iel_inner_outer,iel_inner_inner"], {init_expression: false}]
               #["tag_array_axes", ["result_buf", "sep,c,c"]]
               #["tag_inames", [[["result_init_0", "ilp"]]]]
