@@ -508,7 +508,7 @@ def async_transfer_args_to_host(program_args, cl_dict, kwargs, queue):
                         cl_dict[key][i].get_async(queue=queue, ary=kwargs[key][i])
                 else:
                     cl_dict[key].get_async(queue=queue, ary=kwargs[key])
-            #else:
+            # else:
             #    print("The output arg is not in kwargs. This case is not currently handled.")
             #    exit()
 
@@ -721,6 +721,8 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             split_points.append(nelem)
             split_points[-1] = nelem
             print(split_points)
+            if any([x==0.0 for x in weights]):
+                n = 1
 
             program_list = []
             for i in range(n):
@@ -745,8 +747,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 kwargs_list.append(kwargs.copy())  
                 start = split_points[i]
                 end = split_points[i+1]
-                print("START:", start)
-                print("END:", end)
                 for (name, tag) in dof_array_names.items():
                     if isinstance(tag, IsDOFArray):
                         kwargs_list[i][name] = kwargs[name][start:end,:]
@@ -823,12 +823,12 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     print("Transfer to device: {}".format(td_dt))
                 times[i] += td_dt
 
-            exec_times = [0, 0]
+            nvals = [0, 0]
             # Execute
             for i in range(n):
 
                 start, end = split_points[i], split_points[i+1]
-                nvals = end - start
+                nvals[i] = end - start
                 queue = self.queues[i % queue_count]
                 te_start = time.process_time()
 
@@ -839,9 +839,8 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
                 if report_performance:                
                     queue.finish()
-                    te_dt = time.process_time() - te_start
-                    thpt = nvals / te_dt
-                    print(f"Execution time kernel {program_list[i].name}, device {i}, thpt: {thpt}items/sec: {te_dt}")
+
+                te_dt = time.process_time() - te_start
                 times[i] += te_dt
 
                 # Original execution method
@@ -875,9 +874,9 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 if report_performance:
                     evt = evt_list[i]
                     evt.wait()
-                    print("Kernel time from queued: {}".format( (evt.profile.end - evt.profile.queued)/1e9))
-                    print("Kernel time from submitted: {}".format( (evt.profile.end - evt.profile.submit)/1e9))
-                    print("Kernel time from started: {}".format( (evt.profile.end - evt.profile.start)/1e9))
+                    # print("Kernel time from queued: {}".format( (evt.profile.end - evt.profile.queued)/1e9))
+                    # print("Kernel time from submitted: {}".format( (evt.profile.end - evt.profile.submit)/1e9))
+                    # print("Kernel time from started: {}".format( (evt.profile.end - evt.profile.start)/1e9))
 
                 # I'm pretty certain this is not occurring asynchronously. If it was, the loop times should
                 # be similar. They actually resemble the execution time so I think they are not.
@@ -885,25 +884,31 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 #print(time.process_time() - start_time)
 
                 times[i] += dt
+                te_dt = times[i]
+                thpt = nvals[i] / te_dt
+                print(f"Execution time kernel {program_list[i].name}, device {i}, thpt: {thpt}items/sec: {te_dt}, items: {nvals[i]}")
+
+
         
             for queue in self.queues:
                 queue.finish()
 
-            t_dev0, t_dev1 = times
-            lib = (max(times) - min(times))/max(times)
-            print("PROG:", program.name, times, lib, self.weight_dict[program.name])
-            if lib > 0.15:
-                if t_dev0 > t_dev1:
-                    self.weight_dict[program.name][0] -= 0.1
-                    self.weight_dict[program.name][1] += 0.1
-                else:
-                    self.weight_dict[program.name][0] += 0.1
-                    self.weight_dict[program.name][1] -= 0.1
+            if n > 1:
+                t_dev0, t_dev1 = times
+                lib = (max(times) - min(times))/max(times)
+                print("PROG:", program.name, times, lib, self.weight_dict[program.name])
+                if lib > 0.15:
+                    if t_dev0 > t_dev1:
+                        self.weight_dict[program.name][0] -= 0.1
+                        self.weight_dict[program.name][1] += 0.1
+                    else:
+                        self.weight_dict[program.name][0] += 0.1
+                        self.weight_dict[program.name][1] -= 0.1
 
-                self.weight_dict[program.name][0] = round(self.weight_dict[program.name][0], 2)
-                self.weight_dict[program.name][1] = round(self.weight_dict[program.name][1], 2)
-                # ratio = t_dev0 / t_dev1
-                # f = ratio
+                    self.weight_dict[program.name][0] = round(self.weight_dict[program.name][0], 2)
+                    self.weight_dict[program.name][1] = round(self.weight_dict[program.name][1], 2)
+                    # ratio = t_dev0 / t_dev1
+                    # f = ratio
             # This number is meaningless when other calls to queue.finish exist inside the loops.
             dt_loop = time.process_time() - loop_start
             print("Loop time: {}".format(dt_loop))            
@@ -1011,7 +1016,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     fp_format = arg.dtype.numpy_dtype
                     break
             
-            program = lp.set_options(program, "write_cl")
+            # program = lp.set_options(program, "write_cl")
             # Use 1D file for everything for now
             hjson_file = pkg_resources.open_text(dgk, "diff_1d_transform.hjson".format(dim))
             #hjson_file = pkg_resources.open_text(dgk, "diff_{}d_transform.hjson".format(dim))
