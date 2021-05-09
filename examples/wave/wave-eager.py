@@ -116,7 +116,7 @@ def bump(actx, discr, t=0):
 
 
 def main():
-    nqueues = 1
+    nqueues = 2
 
     queues = []
     """

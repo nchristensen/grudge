@@ -9,6 +9,7 @@ from numpy import prod
 import hjson
 import numpy as np
 import time
+from os.path import expanduser
 
 #from grudge.loopy_dg_kernels.run_tests import analyzeResult
 import pyopencl as cl
@@ -221,7 +222,7 @@ class GrudgeArrayContext(PyOpenCLArrayContext):
             transformations = dgk.load_transformations_from_file(hjson_file,
                 indices)
             hjson_file.close()
-            print(transformations)
+            # print(transformations)
             program = dgk.apply_transformation_list(program, transformations)
 
         elif "grudge_assign" in program.name or \
@@ -602,7 +603,7 @@ def f(args):
 
 class MultipleDispatchArrayContext(BaseNumpyArrayContext):
     
-    def __init__(self, queues, order="C", allocators=None, wait_event_queue_length=None):
+    def __init__(self, queues, order="C", allocators=None, read_in_weights=False, wait_event_queue_length=None):
 
         super().__init__(order=order)
         self.queues = queues
@@ -611,10 +612,42 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             self.allocators = [None for i in range(len(queues))]
         else:
             self.allocators = allocators
-
+        self.read_in_weights = read_in_weights
+        self.weight_dict = {}
+        if read_in_weights:
+            self.populate_weights_dict()
         # TODO add queue length stuff as needed
         #if wait_event_queue_length is None:
         #    wait_event_queue_length = 10
+
+    def populate_weights_dict(self):
+        if self.read_in_weights:
+            f = open(expanduser("~/.cache/grudge/weights"), "r")
+            for l in f.readlines():
+                tokens = l.split()
+                assert len(tokens) == len(self.queues), "Invalid weight file given"
+                id = tokens[0]
+                weights = []
+                for t in tokens[1:]:
+                    weights.append(float(t))
+                self.weight_dict[id] = weights
+            f.close()
+        else:
+            print("Unable to read weights because the flag is set to False")
+
+    def write_weights_out(self):
+        f = open( expanduser("~/.cache/grudge/weights"), "w")
+        for key in self.weight_dict:
+            f.write(key)
+            f.write(" ")
+            weight_list = self.weight_dict[key]
+            for w in weight_list:
+                f.write(w)
+                f.write(" ")
+            f.write("\n")
+        f.close()
+
+
 
     def call_loopy(self, program, **kwargs):
         #print(program.name)
@@ -626,7 +659,10 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         excluded = ["nodes",
                     "resample_by_picking", 
                     "resample_by_mat",
-                    "face_mass", "flatten"]
+                    "face_mass", "flatten",
+                    "grudge_assign_0",
+                    "grudge_assign_1",
+                    "grudge_assign_2"]
 
         if "grudge_assign" in program.name:
             for arg in program.args:
@@ -667,12 +703,24 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                         nelem = kwargs[arg.name][0].shape[0]
                         dof_array_names[arg.name] = arg.tags
 
-           
-            split_points = []
-            step = nelem // n
-            for i in range(n):
-                split_points.append(step*i)
+            #either read weights from class dict or just generate regular weights and add to class dict
+            weights = []
+            if program.name in self.weight_dict:
+                weights = self.weight_dict[program.name]
+            else:
+                frac = 1 / n
+                for i in range(n):
+                    weights.append(frac)
+                self.weight_dict[program.name] = weights
+
+            split_points = [0]
+            point = 0
+            for w in weights:
+                point += round(w * nelem)
+                split_points.append(point)
             split_points.append(nelem)
+            split_points[-1] = nelem
+            print(split_points)
 
             program_list = []
             for i in range(n):
@@ -687,6 +735,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 p = self.transform_loopy_program(p)
                 program_list.append(p)
 
+            split_points = list(map(int, split_points))
             # Create separate views of input and output arrays
             # This assumes the output is in kwargs but that is not necessarily the case
             kwargs_list = []
@@ -696,6 +745,8 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 kwargs_list.append(kwargs.copy())  
                 start = split_points[i]
                 end = split_points[i+1]
+                print("START:", start)
+                print("END:", end)
                 for (name, tag) in dof_array_names.items():
                     if isinstance(tag, IsDOFArray):
                         kwargs_list[i][name] = kwargs[name][start:end,:]
@@ -710,7 +761,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             # Dispatch the tasks to each queue
             result_list = []
             evt_list = []
-            times = []
+            times = [0] * n
             queue_count = len(self.queues)
 
 
@@ -770,10 +821,14 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     queue.finish()                
                     td_dt = time.process_time() - td_start
                     print("Transfer to device: {}".format(td_dt))
+                times[i] += td_dt
 
+            exec_times = [0, 0]
             # Execute
             for i in range(n):
 
+                start, end = split_points[i], split_points[i+1]
+                nvals = end - start
                 queue = self.queues[i % queue_count]
                 te_start = time.process_time()
 
@@ -785,7 +840,9 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 if report_performance:                
                     queue.finish()
                     te_dt = time.process_time() - te_start
-                    print("Execution time: {}".format(te_dt))
+                    thpt = nvals / te_dt
+                    print(f"Execution time kernel {program_list[i].name}, device {i}, thpt: {thpt}items/sec: {te_dt}")
+                times[i] += te_dt
 
                 # Original execution method
                 ##evt, result = program_list[i](queue, **kwargs_list[i], allocator=self.allocators[i])
@@ -796,6 +853,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 queue = self.queues[i % queue_count]
                 th_start = time.process_time()
 
+                print("prog_transfer:", program.name)
                 async_transfer_args_to_host(program.args, cl_dicts[i], kwargs_list[i], queue) 
 
                 if report_performance:
@@ -825,10 +883,27 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 # be similar. They actually resemble the execution time so I think they are not.
                 # --Since changed to separate transfer and execution loops so need to reassess this
                 #print(time.process_time() - start_time)
+
+                times[i] += dt
         
             for queue in self.queues:
                 queue.finish()
 
+            t_dev0, t_dev1 = times
+            lib = (max(times) - min(times))/max(times)
+            print("PROG:", program.name, times, lib, self.weight_dict[program.name])
+            if lib > 0.15:
+                if t_dev0 > t_dev1:
+                    self.weight_dict[program.name][0] -= 0.1
+                    self.weight_dict[program.name][1] += 0.1
+                else:
+                    self.weight_dict[program.name][0] += 0.1
+                    self.weight_dict[program.name][1] -= 0.1
+
+                self.weight_dict[program.name][0] = round(self.weight_dict[program.name][0], 2)
+                self.weight_dict[program.name][1] = round(self.weight_dict[program.name][1], 2)
+                # ratio = t_dev0 / t_dev1
+                # f = ratio
             # This number is meaningless when other calls to queue.finish exist inside the loops.
             dt_loop = time.process_time() - loop_start
             print("Loop time: {}".format(dt_loop))            
@@ -882,7 +957,10 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             evt.wait()
             dt = evt.profile.end - evt.profile.start
             calc_bandwidth_usage(dt/1e9, program, result, kwargs)
-
+            
+            #write new weights to the file, if flag is set
+            
+            
             return evt, result        
 
     # Somehow memoization cannot detect changes in tags
