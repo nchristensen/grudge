@@ -659,10 +659,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         excluded = ["nodes",
                     "resample_by_picking", 
                     "resample_by_mat",
-                    "face_mass", "flatten",
-                    "grudge_assign_0",
-                    "grudge_assign_1",
-                    "grudge_assign_2"]
+                    "face_mass", "flatten"]
 
         if "grudge_assign" in program.name:
             for arg in program.args:
