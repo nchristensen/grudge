@@ -10,6 +10,7 @@ import hjson
 import numpy as np
 import time
 from os.path import expanduser
+from copy import deepcopy
 
 #from grudge.loopy_dg_kernels.run_tests import analyzeResult
 import pyopencl as cl
@@ -522,84 +523,6 @@ def init_worker(queues, allocators, program_list, kwargs_list):
     var_dict["kwargs_list"] = kwargs_list
     #var_dict["devices"] = [queue.device for queue in queues]
 
-def f(args):
-
-    #"""
-    #print("HERE I AM 1")
-    ##(queue, allocator, program, kwargs) = args
-    i = args[0]
-    #platform_id, device_id = args[1]
-
-    queue = var_dict["queues"][i]
-    allocator = var_dict["allocators"][i]
-    program = var_dict["program_list"][i]
-    kwargs = var_dict["kwargs_list"][i]
-    ##device = var_dict["devices"][i]
-    start_time = time.process_time()
-    #"""
-
-    print("HERE I AM 2")
-    #print(platform_id)
-    #import pyopencl as cl
-    #platforms = cl.get_platforms()
-    # For some reason CUDA platform does not work
-    # Maybe try with PoCL Cuda
-    #platform = platforms[1]
-    #devices = platform.get_devices()
-    #print(devices)
-
-    #'''               
-    # Transfer data to device asynchronously 
-    td_start = time.process_time()
-
-    print("HERE I AM 2.1")
-    print(queue)
-    
-    #platform
-    #print(var_dict["devices"][i])
-      
-    #print(queue.device)
-    new_context = cl.Context(devices=[queue.device])
-    print("HERE")
-    print(new_context)
-    new_queue = cl.CommandQueue(new_context, device=queue.device)
-    print(new_queue)
-    print("HERE")
-    #exit()
-    #return
-
-    from pyopencl.tools import ImmediateAllocator
-    alloc = ImmediateAllocator(new_queue)
-    cl_dict =  async_transfer_args_to_device(program.args, kwargs, new_queue, alloc)
-    return
-    """
-    print("HERE I AM 2.2")
-    #cl.enqueue_barrier(queue)
-   # queue.finish()      
-          
-    print("HERE I AM 2.3")
-    td_dt = time.process_time() - td_start
-    print(f"Process {i}: Transfer to device: {td_dt}")
-
-    print("HERE I AM 3")
-    te_start = time.process_time()
-    evt, result = program(queue, **cl_dict, allocator=allocator)
-    queue.finish()
-    
-    print("HERE I AM 4")
-    te_dt = time.process_time() - te_start
-    print("Process {i} Execution time: {te_dt}")
-
-    print("HERE I AM 5")
-    #'''
-    """
-    # Original execution method
-    #print(program.name)
-    #evt, result = program(new_queue, **kwargs)
-    #print("HERE I AM 6")
-
-    # Most of the time the cl_dict is more important than the result
-    return (evt, result, cl_dict)
 
 class MultipleDispatchArrayContext(BaseNumpyArrayContext):
     
@@ -650,12 +573,15 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
 
     def call_loopy(self, program, **kwargs):
+        
         #print(program.name)
 
         # flatten is only relevant to output
         # face_mass has strange shape
         # resample kernels have scattered reads and writes
         # nodes breaks with fixed parameters
+
+
         excluded = ["nodes",
                     "resample_by_picking", 
                     "resample_by_mat",
@@ -666,17 +592,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 if isinstance(arg, lp.ValueArg):
                     arg.tags = ParameterValue(kwargs[arg.name])
                     del kwargs[arg.name]
-        #elif "nodes" == program.name:
-        #    for arg in program.args:
-        #        print(arg.name)
-        #    exit() 
-                    
-            #for arg in program.args:
-            #    print(arg.name)
-            #    print(type(arg))
-            #print(kwargs.keys())
-            #print([type(i) for i in kwargs.values()])
-            #exit()
 
         if program.name not in excluded:
             print(program.name)
@@ -723,16 +638,17 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
             program_list = []
             for i in range(n):
-                p = program.copy()
+                p = deepcopy(program)
+                #p = program.copy()
                 for arg in p.args:
                     if arg.name == "nelements" and arg.tags is not None:
                         nelem = split_points[i+1] - split_points[i]
                         arg.tags.value = nelem
 
-
-                p = lp.set_options(program, no_numpy=False)
+                p = lp.set_options(p, no_numpy=False)
                 p = self.transform_loopy_program(p)
                 program_list.append(p)
+
 
             split_points = list(map(int, split_points))
             # Create separate views of input and output arrays
@@ -741,6 +657,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             start = 0
             for i in range(n):
                 # make separate kwargs for each n
+                #from copy import deepcopy
                 kwargs_list.append(kwargs.copy())  
                 start = split_points[i]
                 end = split_points[i+1]
@@ -764,38 +681,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
             #Execute and transfer back to host              
             loop_start = time.process_time()            
-
-            """
-            # Broken multiprocessing code
-            from multiprocessing import Pool
-
-            initargs = [self.queues, self.allocators, program_list, kwargs_list]
-            #with Pool(n) as pool:
-            with Pool(processes=n, initializer=init_worker, initargs=initargs) as pool:
-                #args = []
-                device_ids = []
-                for i in range(n):
-                    device = self.queues[i].device
-                    platform = device.platform
-                    platform_id = cl.get_platforms().index(platform)
-                    device_id = platform.get_devices().index(device)
-                    device_ids.append((platform_id, device_id))
-
-                args  = [[i, device_ids[i]] for i in range(n)]
-                print("HERE") 
-                output_list = pool.map(f, args)
-                print("HERE")
-                exit()
-                # Have host merge results
-                print(len(output_list))
-                print(len(output_list[0]))
-                for i in range(n):
-                    # May need to use returned queues instead
-                    queue = self.queues[i % queue_count] 
-                    async_transfer_args_to_host(program.args, output_list[i][2], kwargs_list[i], queue) 
-            exit()
-            """
-
             # Break into three separate for loops
             # Transfer to device, kernel launch, transfer to host
             start_times = []
@@ -810,7 +695,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 start_times.append(time.process_time())                
                 td_start = time.process_time()
 
-                cl_dict =  async_transfer_args_to_device(program.args, kwargs_list[i], queue, self.allocators[i])
+                cl_dict =  async_transfer_args_to_device(program_list[i].args, kwargs_list[i], queue, self.allocators[i])
                 cl_dicts.append(cl_dict)
 
                 # Comment this when testing overall performance 
@@ -830,6 +715,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 te_start = time.process_time()
 
                 # Hopefully this waits for the transfers to complete before launching and then runs asynchronously
+                #print(program_list[i])
                 evt, result = program_list[i](queue, **cl_dicts[i], allocator=self.allocators[i])
                 evt_list.append(evt) 
                 result_list.append(result)
@@ -924,9 +810,10 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             # 1: The output array is in kwargs with views in kwargs_list. If so, return that. (Done below).
             # 2: The output is a IsVecDOF. Then create a new dictionary with kwargs["result"][:]
             # with keys result0, result1, result2.
-            # 3: The output is not in kwargs (none of the allowed kernels have this yet). If so, then either
+            # 3: The output is not in kwargs. If so, then either
             #       - Add it to kwargs (before creating kwargs_list) (Done for grudge_assign)
             #       - Merge the results after execution
+
 
             # Fix the result return value
             result_name = list(result.keys())[0]
@@ -938,8 +825,12 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 # in the calling function
                 d = {}
                 for i, array in enumerate(kwargs["result"]):
-                    d["result_s{}".format(i)] = array
+                    #print("RETURN SHAPE")
+                    #print(array.shape)
+                    d[f"result_s{i}"] = array
+                    
                 return None, d
+                
             else: 
                 print(program.name)
                 for arg in program.args:
@@ -1000,8 +891,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
         # Turn off these code transformations for now. They cause nans in 
         # the two axis diff kernel
-        if "diff" in program.name:
-
+        if "diff" in program.name or "diff_2" in program.name:#False:#"diff" in program.name:
             # TODO: Dynamically determine device id,
             pn = -1
             fp_format = None
@@ -1013,7 +903,8 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     fp_format = arg.dtype.numpy_dtype
                     break
             
-            # program = lp.set_options(program, "write_cl")
+            #program = lp.set_options(program, "write_cl")
+>>>>>>> a8e90d54e2e0c917129b2ff5fcd5348d04c010b0
             # Use 1D file for everything for now
             hjson_file = pkg_resources.open_text(dgk, "diff_1d_transform.hjson".format(dim))
             #hjson_file = pkg_resources.open_text(dgk, "diff_{}d_transform.hjson".format(dim))
