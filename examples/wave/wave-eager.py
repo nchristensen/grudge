@@ -89,7 +89,6 @@ def wave_operator(discr, c, w):
 
 def rk4_step(y, t, h, f):
     k1 = f(t, y)
-    exit()
     k2 = f(t+h/2, y + h/2*k1)
     k3 = f(t+h/2, y + h/2*k2)
     k4 = f(t+h, y + h*k3)
