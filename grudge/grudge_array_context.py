@@ -932,7 +932,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
             
 
-        elif False:#"elwise_linear" in program.name:
+        elif "elwise_linear" in program.name:
             hjson_file = pkg_resources.open_text(dgk, "elwise_linear_transform.hjson")
             pn = -1
             fp_format = None
