@@ -116,7 +116,7 @@ def bump(actx, discr, t=0):
 
 
 def main():
-    nqueues = 2
+    nqueues = 1
 
     queues = []
     """
@@ -182,22 +182,23 @@ def main():
         return wave_operator(discr, c=1, w=w)
 
     t = 0
-    t_final = 1*dt
+    t_final = 2*dt
     istep = 0
     while t < t_final:
         fields = rk4_step(fields, t, dt, rhs)
 
-        if istep % 1 == 0:
-            print(f"step: {istep} t: {t} L2: {discr.norm(fields[0])} "
-                    f"sol max: {discr.nodal_max('vol', fields[0])}")
-            vis.write_vtk_file("fld-wave-eager-%04d.vtu" % istep,
-                    [
-                        ("u", fields[0]),
-                        ("v", fields[1:]),
-                        ])
+        # if istep % 1 == 0:
+        #     print(f"step: {istep} t: {t} L2: {discr.norm(fields[0])} "
+        #             f"sol max: {discr.nodal_max('vol', fields[0])}")
+        #     vis.write_vtk_file("fld-wave-eager-%04d.vtu" % istep,
+        #             [
+        #                 ("u", fields[0]),
+        #                 ("v", fields[1:]),
+        #                 ])
 
         t = dt*istep
         istep += 1
+    print("Completing execution after ", istep, "time steps")
 
 
 if __name__ == "__main__":

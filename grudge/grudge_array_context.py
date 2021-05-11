@@ -539,6 +539,17 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
         self.weight_dict = {}
         if read_in_weights:
             self.populate_weights_dict()
+        self.weight_dict = {'actx_special_exp': [0.73,0.27],
+                            'diff_3_axis': [0.8,0.2],
+                            'actx_special_sqrt': [0.71, 0.29],
+                            'grudge_assign_0': [0.78, 0.22],
+                            'diff_1_axis': [0.8, 0.2],
+                            'diff_3_axis': [0.8, 0.2],
+                            'grudge_assign_2': [0.82, 0.18],
+                            'grudge_assign_1': [0.8, 0.2],
+                            'diff_2_axis': [0.9, 0.1],
+                            'elwise_linear': [0.07, 0.93]
+                            }
         # TODO add queue length stuff as needed
         #if wait_event_queue_length is None:
         #    wait_event_queue_length = 10
@@ -587,6 +598,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     "resample_by_mat",
                     "face_mass", "flatten"]
 
+
         if "grudge_assign" in program.name:
             for arg in program.args:
                 if isinstance(arg, lp.ValueArg):
@@ -617,16 +629,16 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
             #either read weights from class dict or just generate regular weights and add to class dict
             weights = []
-            if program.name in self.weight_dict:
-                weights = self.weight_dict[program.name]
-            else:
+            if program.name not in self.weight_dict:
                 frac = 1 / n
                 for i in range(n):
                     weights.append(frac)
                 self.weight_dict[program.name] = weights
+            weights = self.weight_dict[program.name]
 
             split_points = [0]
             point = 0
+            print(weights)
             for w in weights:
                 point += round(w * nelem)
                 split_points.append(point)
@@ -776,6 +788,8 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             for queue in self.queues:
                 queue.finish()
 
+            if n == 1:
+                print("PROG:", program.name, times, 0, self.weight_dict[program.name])
             if n > 1:
                 t_dev0, t_dev1 = times
                 lib = (max(times) - min(times))/max(times)
@@ -788,8 +802,10 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                         self.weight_dict[program.name][0] += 0.1
                         self.weight_dict[program.name][1] -= 0.1
 
-                    self.weight_dict[program.name][0] = round(self.weight_dict[program.name][0], 2)
-                    self.weight_dict[program.name][1] = round(self.weight_dict[program.name][1], 2)
+                    self.weight_dict[program.name][0] = max(round(self.weight_dict[program.name][0], 2), 0.1)
+                    self.weight_dict[program.name][1] = max(round(self.weight_dict[program.name][1], 2), 0.1)
+                    self.weight_dict[program.name][0] = min(self.weight_dict[program.name][0], 0.9)
+                    self.weight_dict[program.name][1] = min(self.weight_dict[program.name][1], 0.9)
                     # ratio = t_dev0 / t_dev1
                     # f = ratio
             # This number is meaningless when other calls to queue.finish exist inside the loops.
@@ -813,8 +829,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             # 3: The output is not in kwargs. If so, then either
             #       - Add it to kwargs (before creating kwargs_list) (Done for grudge_assign)
             #       - Merge the results after execution
-
-
             # Fix the result return value
             result_name = list(result.keys())[0]
             if result_name in kwargs:  
@@ -828,15 +842,15 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     #print("RETURN SHAPE")
                     #print(array.shape)
                     d[f"result_s{i}"] = array
-                    
+
                 return None, d
-                
+
             else: 
                 print(program.name)
                 for arg in program.args:
                     if arg.is_output_only:
                         print(arg.name) 
-                
+
                 print("ERROR: Result view is not in kwarg. See above for what to do. (probably)")
                 exit()
 
@@ -852,7 +866,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             calc_bandwidth_usage(dt/1e9, program, result, kwargs)
             
             #write new weights to the file, if flag is set
-            
             
             return evt, result        
 
@@ -904,7 +917,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     break
             
             #program = lp.set_options(program, "write_cl")
->>>>>>> a8e90d54e2e0c917129b2ff5fcd5348d04c010b0
             # Use 1D file for everything for now
             hjson_file = pkg_resources.open_text(dgk, "diff_1d_transform.hjson".format(dim))
             #hjson_file = pkg_resources.open_text(dgk, "diff_{}d_transform.hjson".format(dim))
