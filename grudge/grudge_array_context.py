@@ -133,7 +133,9 @@ class GrudgeArrayContext(PyOpenCLArrayContext):
                     fp_format = arg.dtype.numpy_dtype
                     break
 
-            hjson_file = pkg_resources.open_text(dgk, "diff_{}d_transform.hjson".format(dim))
+            # Use the same set of transformations for all of the differentiation kernels
+            hjson_file = pkg_resources.open_text(dgk, "diff_1d_transform.hjson")
+            #hjson_file = pkg_resources.open_text(dgk, "diff_{}d_transform.hjson".format(dim))
 
             # FP format is very specific. Could have integer arrays?
             # What about mixed data types?
