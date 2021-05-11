@@ -85,11 +85,11 @@
           2:[
               # Format: [Transformation, args, kwargs]
               ["tag_inames", [[["imatrix", "ilp"]]]],
-              ["split_iname", ["iel", 64], {outer_tag: "g.0", slabs:[0,1]}],
+              ["split_iname", ["iel", 32], {outer_tag: "g.0", slabs:[0,1]}],
               ["split_iname", ["iel_inner", 32], {outer_tag: "ilp", inner_tag: "l.0", slabs:[0,1]}],
               ["split_iname", ["idof", 10], {outer_tag: "g.1", inner_tag: "l.1"}],
               ["add_prefetch", ["vec", "j,iel_inner_outer,iel_inner_inner"], {temporary_name: "vecf", default_tag: "l.auto"}],
-              ["add_prefetch", ["diff_mat", "j"], {temporary_name: "matfp", default_tag: "unr"}], 
+              #["add_prefetch", ["diff_mat", "j"], {temporary_name: "matfp", default_tag: "unr"}], 
           ],
           3:[
               ["tag_inames", [[["imatrix", "ilp"]]]],

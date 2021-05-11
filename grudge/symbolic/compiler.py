@@ -183,7 +183,7 @@ class Assign(AssignBase):
 
     @memoize_method
     def get_dependencies(self, each_vector=False):
-        dep_mapper = _make_dep_mapper(include_subscripts=False)
+        dep_mapper = _make_dep_mapper(False)
 
         from operator import or_
         deps = reduce(
@@ -229,7 +229,7 @@ class RankDataSwapAssign(Instruction):
 
     @memoize_method
     def get_dependencies(self):
-        return _make_dep_mapper(include_subscripts=False)(self.field)
+        return _make_dep_mapper(False)(self.field)
 
     def __str__(self):
         return ("{\n"
@@ -290,7 +290,7 @@ class DiffBatchAssign(Instruction):
 
     @memoize_method
     def get_dependencies(self):
-        return _make_dep_mapper(include_subscripts=False)(self.field)
+        return _make_dep_mapper(False)(self.field)
 
     def __str__(self):
         lines = []
@@ -763,7 +763,7 @@ def aggregate_assignments(inf_mapper, instructions, result,
         externally_used_names |= {result}
 
     def schedule_and_finalize_assignment(ass):
-        dep_mapper = _make_dep_mapper(include_subscripts=False)
+        dep_mapper = _make_dep_mapper(False)
 
         names_exprs = list(zip(ass.names, ass.exprs))
 

@@ -906,7 +906,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
         # Turn off these code transformations for now. They cause nans in 
         # the two axis diff kernel
-        if "diff" in program.name or "diff_2" in program.name:#False:#"diff" in program.name:
+        if "diff" in program.name:
             # TODO: Dynamically determine device id,
             pn = -1
             fp_format = None
@@ -920,7 +920,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             
             #program = lp.set_options(program, "write_cl")
             # Use 1D file for everything for now
-            hjson_file = pkg_resources.open_text(dgk, "diff_1d_transform.hjson".format(dim))
+            hjson_file = pkg_resources.open_text(dgk, "diff_1d_transform.hjson")
             #hjson_file = pkg_resources.open_text(dgk, "diff_{}d_transform.hjson".format(dim))
 
             fp_string = get_fp_string(fp_format)
@@ -932,7 +932,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
             
 
-        elif False:#"elwise_linear" in program.name:
+        elif "elwise_linear" in program.name:
             hjson_file = pkg_resources.open_text(dgk, "elwise_linear_transform.hjson")
             pn = -1
             fp_format = None
