@@ -701,7 +701,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
             # Set to false for performance testing.
             # Also disables dynamic load balancing.
-            report_performance = True
+            report_performance = False
 
             loop_start = time.process_time()            
             # Transfer data to devices asynchronously 
@@ -782,7 +782,7 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
             loop_time = loop_end - loop_start
 
             # This number is meaningless when other calls to queue.finish exist inside the loops.
-            print(f"Transfer + Launch Times: {loop_time}")
+            print(f"Sum time of Loops: {loop_time}")
             if n == 1:
                 print("PROG:", program.name, times, 0, self.weight_dict[program.name])
             if n > 1 and report_performance: # report_performance==True is needed for dynamic load balancing
@@ -801,8 +801,6 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     self.weight_dict[program.name][1] = max(round(self.weight_dict[program.name][1], 2), 0.1)
                     self.weight_dict[program.name][0] = min(self.weight_dict[program.name][0], 0.9)
                     self.weight_dict[program.name][1] = min(self.weight_dict[program.name][1], 0.9)
-            else:
-                print("report_performance is False, dynamic load balancing disabled")
                     # ratio = t_dev0 / t_dev1
                     # f = ratio
 
