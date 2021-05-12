@@ -694,14 +694,16 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
 
             #Execute and transfer back to host              
-            loop_start = time.process_time()            
             # Break into three separate for loops
             # Transfer to device, kernel launch, transfer to host
             start_times = []
             cl_dicts = []
 
+            # Set to false for performance testing.
+            # Also disables dynamic load balancing.
             report_performance = True
 
+            loop_start = time.process_time()            
             # Transfer data to devices asynchronously 
             for i in range(n):
  
@@ -712,12 +714,11 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 cl_dict =  async_transfer_args_to_device(program_list[i].args, kwargs_list[i], queue, self.allocators[i])
                 cl_dicts.append(cl_dict)
 
-                # Comment this when testing overall performance 
                 if report_performance:
                     queue.finish()                
                     td_dt = time.process_time() - td_start
                     print("Transfer to device: {}".format(td_dt))
-                times[i] += td_dt
+                    times[i] += td_dt
 
             nvals = [0, 0]
             # Execute
@@ -736,9 +737,8 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
 
                 if report_performance:                
                     queue.finish()
-
-                te_dt = time.process_time() - te_start
-                times[i] += te_dt
+                    te_dt = time.process_time() - te_start
+                    times[i] += te_dt
 
                 # Original execution method
                 ##evt, result = program_list[i](queue, **kwargs_list[i], allocator=self.allocators[i])
@@ -755,22 +755,18 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 if report_performance:
                     queue.finish()
                     th_dt = time.process_time() - th_start
+                    times[i] += th_dt
                     print("Transfer to host: {}".format(th_dt))
-
-                # This may not be a useful bandwidth number. It would probably be better to
-                # calculate the to and from device bandwidths separately from the
-                # computation. The python code in between may make the results look
-                # worse than they otherwise would have anyway.
-                if report_performance: 
-                    queue.finish()
                     dt = time.process_time() - start_times[i]
-                    calc_bandwidth_usage(dt, program_list[i], result_list[i], kwargs_list[i])
-
+                    calc_bandwidth_usage(times[i], program_list[i], result_list[i], kwargs_list[i])
+                    te_dt = times[i]
+                    thpt = nvals[i] / te_dt
+                    print(f"Execution time kernel {program_list[i].name}, device {i}, thpt: {thpt}items/sec: {te_dt}, items: {nvals[i]}")
 
                 # evt times apparently do not cover transfers to and from device
-                if report_performance:
-                    evt = evt_list[i]
-                    evt.wait()
+                #if report_performance:
+                    #evt = evt_list[i]
+                    #evt.wait()
                     # print("Kernel time from queued: {}".format( (evt.profile.end - evt.profile.queued)/1e9))
                     # print("Kernel time from submitted: {}".format( (evt.profile.end - evt.profile.submit)/1e9))
                     # print("Kernel time from started: {}".format( (evt.profile.end - evt.profile.start)/1e9))
@@ -779,20 +775,17 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                 # be similar. They actually resemble the execution time so I think they are not.
                 # --Since changed to separate transfer and execution loops so need to reassess this
                 #print(time.process_time() - start_time)
-
-                times[i] += dt
-                te_dt = times[i]
-                thpt = nvals[i] / te_dt
-                print(f"Execution time kernel {program_list[i].name}, device {i}, thpt: {thpt}items/sec: {te_dt}, items: {nvals[i]}")
-
-
         
             for queue in self.queues:
                 queue.finish()
+            loop_end = time.process_time()
+            loop_time = loop_end - loop_start
 
+            # This number is meaningless when other calls to queue.finish exist inside the loops.
+            print(f"Transfer + Launch Times: {loop_time}")
             if n == 1:
                 print("PROG:", program.name, times, 0, self.weight_dict[program.name])
-            if n > 1:
+            if n > 1 and report_performance: # report_performance==True is needed for dynamic load balancing
                 t_dev0, t_dev1 = times
                 lib = (max(times) - min(times))/max(times)
                 print("PROG:", program.name, times, lib, self.weight_dict[program.name])
@@ -808,11 +801,10 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     self.weight_dict[program.name][1] = max(round(self.weight_dict[program.name][1], 2), 0.1)
                     self.weight_dict[program.name][0] = min(self.weight_dict[program.name][0], 0.9)
                     self.weight_dict[program.name][1] = min(self.weight_dict[program.name][1], 0.9)
+            else:
+                print("report_performance is False, dynamic load balancing disabled")
                     # ratio = t_dev0 / t_dev1
                     # f = ratio
-            # This number is meaningless when other calls to queue.finish exist inside the loops.
-            dt_loop = time.process_time() - loop_start
-            print("Loop time: {}".format(dt_loop))            
 
             #cl.wait_for_events(evt_list)
             #for evt in evt_list:
