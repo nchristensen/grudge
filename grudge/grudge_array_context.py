@@ -803,6 +803,8 @@ class MultipleDispatchArrayContext(BaseNumpyArrayContext):
                     self.weight_dict[program.name][1] = min(self.weight_dict[program.name][1], 0.9)
                     # ratio = t_dev0 / t_dev1
                     # f = ratio
+            if not report_performance:
+                print("Report performance = False, dynamic load balancing disabled")
 
             #cl.wait_for_events(evt_list)
             #for evt in evt_list:
