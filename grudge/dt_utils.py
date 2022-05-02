@@ -47,7 +47,10 @@ import numpy as np
 import loopy as lp
 
 from arraycontext import ArrayContext, thaw, freeze, Scalar
-from meshmode.transform_metadata import FirstAxisIsElementsTag
+from meshmode.transform_metadata import (FirstAxisIsElementsTag,
+                                         DiscretizationDOFAxisTag,
+                                         DiscretizationFaceAxisTag,
+                                         DiscretizationElementAxisTag)
 
 from grudge.dof_desc import DD_VOLUME, DOFDesc, as_dofdesc
 from grudge.discretization import DiscretizationCollection
@@ -321,11 +324,25 @@ def dt_geometric_factors(
             data=tuple(
                 actx.einsum(
                     "fej->e",
-                    face_ae_i.reshape(
-                        vgrp.mesh_el_group.nfaces, vgrp.nelements, -1),
+                    actx.tag_axis(
+                        0,
+                        DiscretizationFaceAxisTag(),
+                        actx.tag_axis(
+                            1,
+                            DiscretizationElementAxisTag(),
+                            actx.tag_axis(
+                                2,
+                                DiscretizationDOFAxisTag(),
+                                face_ae_i.reshape(
+                                    vgrp.mesh_el_group.nfaces,
+                                    vgrp.nelements,
+                                    -1
+                                )))),
                     tagged=(FirstAxisIsElementsTag(),))
 
-                for vgrp, face_ae_i in zip(volm_discr.groups, face_areas)
+                for vgrp, fgrp, face_ae_i in zip(volm_discr.groups,
+                                                 face_discr.groups,
+                                                 face_areas)
             )
         )
     else:
@@ -346,8 +363,8 @@ def dt_geometric_factors(
                     tagged=(FirstAxisIsElementsTag(),))
 
                 for vgrp, afgrp, face_ae_i in zip(volm_discr.groups,
-                                                face_discr.groups,
-                                                face_areas)
+                                                  face_discr.groups,
+                                                  face_areas)
             )
         )
     """
@@ -381,10 +398,12 @@ def dt_geometric_factors(
         data=tuple(
             actx.einsum("e,ei->ei",
                         1/sae_i,
-                        cv_i,
+                        actx.tag_axis(1,
+                                      DiscretizationDOFAxisTag(),
+                                      cv_i),
                         tagged=(FirstAxisIsElementsTag(),)) * dcoll.dim
 
-            for cv_i, sae_i in zip(cell_vols, surface_areas)
+            for cv_i, sae_i, vgrp in zip(cell_vols, surface_areas, volm_discr.groups)
         )
     ))
     """
