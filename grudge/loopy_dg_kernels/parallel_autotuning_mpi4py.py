@@ -17,8 +17,8 @@ from grudge.loopy_dg_kernels.run_tests import run_single_param_set, generic_test
 from grudge.grudge_array_context import convert
 #from grudge.execution import diff_prg, elwise_linear
 import mpi4py.MPI as MPI
-#from mpi4py.futures import MPIPoolExecutor, MPICommExecutor
-from mpipool import MPIPool, MPIExecutor
+from mpi4py.futures import MPIPoolExecutor, MPICommExecutor
+#from mpipool import MPIPool
 
 def get_queue(pe_num, platform_num):
     platforms = cl.get_platforms()
@@ -132,28 +132,28 @@ def parallel_autotune(knl, platform_id, actx_class, comm):
     sort_key = lambda entry: entry[0]
     transformations = {}
     if len(args) > 0: # Guard against empty list
-        with MPIExecutor() as mypool:
-            mypool.workers_exit()
-            results = mypool.map(test, args[:6])
+        with MPICommExecutor() as mypool:
+            if mypool is not None:
+                #mypool.workers_exit()
+                results = list(mypool.map(test, args[:5], chunksize=1))
+                results.sort(key=sort_key)
+        
+                #for r in results:
+                #    print(r)
+                # Workaround for pocl CUDA bug
+                # whereby times are imprecise
+                ret_index = 0
+                for i, result in enumerate(results):
+                    if result[0] > 1e-7:
+                        ret_index = i
+                        break
 
-            results.sort(key=sort_key)
-            
-            #for r in results:
-            #    print(r)
-            # Workaround for pocl CUDA bug
-            # whereby times are imprecise
-            ret_index = 0
-            for i, result in enumerate(results):
-                if result[0] > 1e-7:
-                    ret_index = i
-                    break
+                avg_time, transformations, data = results[ret_index]
 
-            avg_time, transformations, data = results[ret_index]
-
-            od = {"transformations": transformations}
-            out_file = open(hjson_file_str, "wt+")
-            hjson.dump(od, out_file,default=convert)
-            out_file.close()
+    od = {"transformations": transformations}
+    out_file = open(hjson_file_str, "wt+")
+    hjson.dump(od, out_file,default=convert)
+    out_file.close()
 
     return transformations
 

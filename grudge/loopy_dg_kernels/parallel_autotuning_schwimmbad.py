@@ -134,6 +134,7 @@ def parallel_autotune(knl, platform_id, actx_class, comm):
         sys.exit(0)
 
     sort_key = lambda entry: entry[0]
+    transformations = {}
     if len(args) > 0: # Guard against empty list
         results = list(mypool.map(test, args))
         mypool.close()
@@ -151,7 +152,6 @@ def parallel_autotune(knl, platform_id, actx_class, comm):
 
         avg_time, transformations, data = results[ret_index]
     else:
-        transformations = {}
         mypool.close()
     
     od = {"transformations": transformations}
