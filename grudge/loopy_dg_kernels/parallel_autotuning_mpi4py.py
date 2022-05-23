@@ -32,6 +32,7 @@ def test(args):
     #print(args)
     platform_id, knl, tlist_generator, params, test_fn = args
     comm = MPI.COMM_WORLD # Assume we're using COMM_WORLD. May need to change this in the future
+    # From MPI.PoolExecutor the communicator for the tasks is not COMM_WORLD
     queue = get_queue(comm.Get_rank(), platform_id)
     result = run_single_param_set(queue, knl, tlist_generator, params, test_fn) 
     return result
@@ -132,9 +133,8 @@ def parallel_autotune(knl, platform_id, actx_class, comm):
     sort_key = lambda entry: entry[0]
     transformations = {}
     if len(args) > 0: # Guard against empty list
-        with MPICommExecutor() as mypool:
+        with MPICommExecutor(MPI.COMM_WORLD, root=0) as mypool:
             if mypool is not None:
-                #mypool.workers_exit()
                 results = list(mypool.map(test, args[:5], chunksize=1))
                 results.sort(key=sort_key)
         
