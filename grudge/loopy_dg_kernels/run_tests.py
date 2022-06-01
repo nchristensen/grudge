@@ -7,6 +7,7 @@ import pyopencl.clrandom
 import loopy as lp
 from loopy.version import LOOPY_USE_LANGUAGE_VERSION_2018_2
 from grudge.loopy_dg_kernels import apply_transformation_list
+from pyopencl.tools import ImmediateAllocator, MemoryPool
 #from loopy.kernel.data import AddressSpace
 
 """
@@ -191,6 +192,8 @@ def test_face_mass_merged(kern, backend="OPENCL", nruns=10, warmup=True):
 # distinguish between CUDA and OpenCL possibly
 # This hardcodes the memory layout, should probably instead retrieve it from somewhere on a per
 # tag basis
+
+#cache_arg_dict = {}
 def generic_test(queue, kern, backend="OPENCL", nruns=10, warmup=True):
 
     kern = lp.set_options(kern, "no_numpy")
@@ -226,7 +229,6 @@ def generic_test(queue, kern, backend="OPENCL", nruns=10, warmup=True):
         f.close()
         """
 
-        from pyopencl.tools import ImmediateAllocator, MemoryPool
         allocator = ImmediateAllocator(queue)
         mem_pool = MemoryPool(allocator)
 
@@ -235,66 +237,98 @@ def generic_test(queue, kern, backend="OPENCL", nruns=10, warmup=True):
         # Fill arrays with random data
         # Could probably just read the strides from the kernel to get ordering
         for arg in kern.default_entrypoint.args:
-            if IsDOFArray() in arg.tags:
-                arg_dict[arg.name] = cl.array.Array(queue, arg.shape, arg.dtype, order="F", allocator=mem_pool)
-                if not arg.is_output:
-                    cl.clrandom.fill_rand(arg_dict[arg.name], queue)
-            elif IsSepVecDOFArray() in arg.tags:
-                if arg.is_output:
+            if True:#str(arg) not in cache_arg_dict:
+                #print(arg)
+                fp_bytes = arg.dtype.numpy_dtype.itemsize
+                if IsDOFArray() in arg.tags:
+                    array = cl.array.Array(queue, arg.shape, arg.dtype, order="F", allocator=mem_pool)
+                    #if not arg.is_output:
+                    #    cl.clrandom.fill_rand(array, queue)
+                elif IsSepVecDOFArray() in arg.tags:
+                    #if arg.is_output:
                     obj_array = [cl.array.Array(queue, arg.shape[1:], dtype=arg.dtype, allocator=mem_pool, order="F") for i in range(arg.shape[0])]
-                    arg_dict[arg.name] = make_obj_array(obj_array)
-                else:
-                    print("Input SepVecDOFArrays are not currently supported")
-                    exit()
-            elif IsSepVecOpArray() in arg.tags:
-                obj_array = [cl.clrandom.rand(queue, arg.shape[1:], dtype=arg.dtype) for i in range(arg.shape[0])]
-                arg_dict[arg.name] = make_obj_array(obj_array)
-            elif IsOpArray() in arg.tags or IsVecOpArray() in arg.tags:
-                arg_dict[arg.name] = cl.clrandom.rand(queue, arg.shape, dtype=arg.dtype)
-            elif IsFaceDOFArray() in arg.tags:
-                fp_bytes = arg.dtype.numpy_dtype.itemsize
-                nfaces, nelements, nface_nodes = arg.shape
-                strides = (fp_bytes*nelements, fp_bytes*1, fp_bytes*nelements*nfaces) #original
-                arg_dict[arg.name] = cl.array.Array(queue, arg.shape, dtype=arg.dtype, 
-                    strides=strides, allocator=mem_pool)
-                cl.clrandom.fill_rand(arg_dict[arg.name], queue=queue)
-            elif IsFaceMassOpArray() in arg.tags:
-                # Are these strides correct?
-                arg_dict[arg.name] = cl.clrandom.rand(queue, arg.shape, dtype=arg.dtype)
-            elif IsVecDOFArray() in arg.tags:
-                fp_bytes = arg.dtype.numpy_dtype.itemsize
-                nr, nelements, ndofs = arg.shape
-                strides = (fp_bytes*nelements*ndofs, fp_bytes, fp_bytes*nelements) #original
-                arg_dict[arg.name] = cl.array.Array(queue, arg.shape, dtype=arg.dtype, 
-                    strides=strides, allocator=mem_pool)
-                cl.clrandom.fill_rand(arg_dict[arg.name], queue=queue)
-            elif IsFourAxisDOFArray() in arg.tags:
-                fp_bytes = arg.dtype.numpy_dtype.itemsize
-                nx, nr, nelements, ndofs = arg.shape
-                strides = (fp_bytes*nelements*ndofs*nr, fp_bytes*nelements*ndofs,
-                            fp_bytes, fp_bytes*nelements)
-                arg_dict[arg.name] = cl.array.Array(queue, arg.shape, dtype=arg.dtype, 
-                    strides=strides, allocator=mem_pool)
-                cl.clrandom.fill_rand(arg_dict[arg.name], queue=queue)
-            elif isinstance(arg, lp.ArrayArg):
-                print("No tags recognized. Assuming default data layout")
-                print(arg.name)
-                # Assume default layout
-                arg_dict[arg.name] = cl.clrandom.rand(queue, arg.shape, dtype=arg.dtype)
+                    array = make_obj_array(obj_array)
+                    #else:
+                    #    print("Input SepVecDOFArrays are not currently supported")
+                    #    exit()
+                elif IsFaceDOFArray() in arg.tags:
+                    #fp_bytes = arg.dtype.numpy_dtype.itemsize
+                    nfaces, nelements, nface_nodes = arg.shape
+                    strides = (fp_bytes*nelements, fp_bytes*1, fp_bytes*nelements*nfaces) #original
+                    array = cl.array.Array(queue, arg.shape, dtype=arg.dtype, 
+                        strides=strides, allocator=mem_pool)
+                    #cl.clrandom.fill_rand(array, queue=queue)
+                elif IsVecDOFArray() in arg.tags:
+                    #fp_bytes = arg.dtype.numpy_dtype.itemsize
+                    nr, nelements, ndofs = arg.shape
+                    strides = (fp_bytes*nelements*ndofs, fp_bytes, fp_bytes*nelements) #original
+                    array = cl.array.Array(queue, arg.shape, dtype=arg.dtype, 
+                        strides=strides, allocator=mem_pool)
+                    #cl.clrandom.fill_rand(array, queue=queue)
+                elif IsFourAxisDOFArray() in arg.tags:
+                    #fp_bytes = arg.dtype.numpy_dtype.itemsize
+                    nx, nr, nelements, ndofs = arg.shape
+                    strides = (fp_bytes*nelements*ndofs*nr, fp_bytes*nelements*ndofs,
+                                fp_bytes, fp_bytes*nelements)
+                    array = cl.array.Array(queue, arg.shape, dtype=arg.dtype, 
+                        strides=strides, allocator=mem_pool)
+                    #cl.clrandom.fill_rand(array, queue=queue)
+                elif IsSepVecOpArray() in arg.tags:
+                    #obj_array = [cl.clrandom.rand(queue, arg.shape[1:], dtype=arg.dtype) for i in range(arg.shape[0])]
+                    obj_array = [cl.array.Array(queue, arg.shape[1:], dtype=arg.dtype, order="C", allocator=mem_pool) for i in range(arg.shape[0])]
+                    #if not arg.is_output:
+                    #    cl.clrandom.fill_rand(arg_dict[arg.name], queue)
+                    #obj_array = []
+                    #for i in range(arg.shape[0]):
+                        #clarray = cl.array.Array(queue, arg.shape[1:], arg.dtype, order="C", allocator=mem_pool)
+                        #cl.clrandom.fill_rand(clarray, queue=queue)
+                        #obj_array.append(clarray)
+                    array = make_obj_array(obj_array)
+                #elif IsFaceMassOpArray() in arg.tags:
+                    # Are these strides correct?
+                    #array = cl.clrandom.rand(queue, arg.shape, dtype=arg.dtype)
+                elif IsOpArray() in arg.tags or IsVecOpArray() in arg.tags or IsFaceMassOpArray in arg.tags:
+                    array = cl.array.Array(queue, arg.shape, arg.dtype, order="C", allocator=mem_pool)
+                    #cl.clrandom.fill_rand(array, queue=queue)
+                    #array = cl.clrandom.rand(queue, arg.shape, dtype=arg.dtype)
+                elif isinstance(arg, lp.ArrayArg):
+                    array = cl.array.Array(queue, arg.shape, arg.dtype, order="C", allocator=mem_pool)
+                    #cl.clrandom.fill_rand(array, queue=queue)
+                    print("No tags recognized. Assuming default data layout")
+                    print(arg.name)
+                    # Assume default layout
+                    #array = cl.clrandom.rand(queue, arg.shape, dtype=arg.dtype)
+
+                if not arg.is_output:
+                    if isinstance(array, cl.array.Array):
+                        #pass
+                        cl.clrandom.fill_rand(array, queue=queue)
+                    elif isinstance(array[0], cl.array.Array):
+                        for entry in array:
+                            #pass
+                            cl.clrandom.fill_rand(entry, queue=queue)
+                    else:
+                        raise TypeError
+
+                #cache_arg_dict[str(arg)] = array
                 #print(arg.name)
                 #print(arg.tags)
                 #print("Unknown Tag")
                 #exit()
+                   
+            #arg_dict[arg.name] = cache_arg_dict[str(arg)]
+            arg_dict[arg.name] = array
 
         if warmup:
             for i in range(2):
                 kern(queue, **arg_dict)
             queue.finish()
 
+        #"""
         sum_time = 0.0
         events = []
         for i in range(nruns):
-            evt, _ = kern(queue, **arg_dict)
+            evt, out = kern(queue, **arg_dict)
             events.append(evt)
 
         cl.wait_for_events(events)
@@ -302,9 +336,18 @@ def generic_test(queue, kern, backend="OPENCL", nruns=10, warmup=True):
             sum_time += evt.profile.end - evt.profile.start
         sum_time = sum_time / 1e9        
         #queue.finish()
-
+        #"""
+    #sum_time = 1.0
     avg_time = sum_time / nruns
-
+    """
+    for entry in arg_dict:
+        if isinstance(entry, cl.array.Array):
+            del entry
+        else:
+            for item in entry:
+                del item
+    del kern
+    """
     return arg_dict, avg_time
 
 
