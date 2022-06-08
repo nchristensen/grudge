@@ -314,7 +314,7 @@ class _DistributedCompiledFunction:
 
 class MPIPytatoArrayContextBase(MPIBasedArrayContext):
     def __init__(
-            self, mpi_communicator, queue, *, mpi_base_tag, allocator=None
+            self, mpi_communicator, queue, mpi_base_tag, *, allocator=None
             ) -> None:
         if allocator is None:
             warn("No memory allocator specified, please pass one. "
