@@ -135,7 +135,7 @@ def parallel_autotune(knl, platform_id, actx_class, comm):
         with MPICommExecutor() as mypool:
             if mypool is not None:
                 #mypool.workers_exit()
-                results = list(mypool.map(test, args[:20], chunksize=10))
+                results = list(mypool.map(test, args, chunksize=10, timeout=40))
                 results.sort(key=sort_key)
         
                 #for r in results:
