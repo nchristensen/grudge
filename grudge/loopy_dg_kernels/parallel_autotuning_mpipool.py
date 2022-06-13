@@ -17,8 +17,8 @@ from grudge.loopy_dg_kernels.run_tests import run_single_param_set, generic_test
 from grudge.grudge_array_context import convert
 #from grudge.execution import diff_prg, elwise_linear
 import mpi4py.MPI as MPI
-from mpi4py.futures import MPIPoolExecutor, MPICommExecutor
-#from mpipool import MPIPool
+#from mpi4py.futures import MPIPoolExecutor, MPICommExecutor
+from mpipool import MPIPool, MPIExecutor
 
 def get_queue(pe_num, platform_num):
     platforms = cl.get_platforms()
@@ -148,12 +148,12 @@ def parallel_autotune(knl, platform_id, actx_class, comm):
                         ret_index = i
                         break
 
-                avg_time, transformations, data = results[ret_index]
+            avg_time, transformations, data = results[ret_index]
 
-    od = {"transformations": transformations}
-    out_file = open(hjson_file_str, "wt+")
-    hjson.dump(od, out_file,default=convert)
-    out_file.close()
+            od = {"transformations": transformations}
+            out_file = open(hjson_file_str, "wt+")
+            hjson.dump(od, out_file,default=convert)
+            out_file.close()
 
     return transformations
 

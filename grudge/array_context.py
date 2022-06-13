@@ -161,26 +161,13 @@ class _DistributedLazilyCompilingFunctionCaller(LazilyCompilingFunctionCaller):
         from meshmode.pytato_utils import unify_discretization_entity_tags
         from pytools import ProcessLogger
 
-        dict_of_named_arrays = pt.transform.deduplicate_data_wrappers(
-            dict_of_named_arrays)
-        dict_of_named_arrays = pt.transform.materialize_with_mpms(
-            dict_of_named_arrays)
+        with ProcessLogger(logger, "deduplicate_data_wrappers[pre-partition]"):
+            dict_of_named_arrays = pt.transform.deduplicate_data_wrappers(
+                dict_of_named_arrays)
 
-        # {{{ un-materialize 0-long arrays (why would anyone want to materialize
-        # them?)
-
-        def unmaterialize_zero_long_arrays(expr):
-            if isinstance(expr, pt.Array) and expr.size == 0:
-                from pytato.tags import ImplStored
-                return expr.without_tags(ImplStored(), verify_existence=False)
-            else:
-                return expr
-
-        dict_of_named_arrays = pt.transform.map_and_copy(
-            dict_of_named_arrays,
-            unmaterialize_zero_long_arrays)
-
-        # }}}
+        with ProcessLogger(logger, "materialize_with_mpms[pre-partition]"):
+            dict_of_named_arrays = pt.transform.materialize_with_mpms(
+                dict_of_named_arrays)
 
         with ProcessLogger(logger,
                            "transform_dag.infer_axes_tags[pre-partition]"):
@@ -295,6 +282,11 @@ class _DistributedCompiledFunction:
         from arraycontext.impl.pytato.utils import get_cl_axes_from_pt_axes
         input_args_for_prg = _args_to_cl_buffers(
                 self.actx, self.input_id_to_name_in_program, arg_id_to_arg)
+        from time import time
+
+        self.actx.queue.finish()
+
+        t_start = time()
 
         from pytato.distributed import execute_distributed_partition
         out_dict = execute_distributed_partition(
@@ -302,6 +294,10 @@ class _DistributedCompiledFunction:
                 self.actx.queue, self.actx.mpi_communicator,
                 allocator=self.actx.allocator,
                 input_args=input_args_for_prg)
+
+        t_end = time()
+
+        print(f"Fusion actx took: {t_end - t_start} secs")
 
         def to_output_template(keys, _):
             ary_name_in_prg = self.output_id_to_name_in_program[keys]
@@ -318,7 +314,7 @@ class _DistributedCompiledFunction:
 
 class MPIPytatoArrayContextBase(MPIBasedArrayContext):
     def __init__(
-            self, mpi_communicator, queue, *, mpi_base_tag, allocator=None
+            self, mpi_communicator, queue, mpi_base_tag, *, allocator=None
             ) -> None:
         if allocator is None:
             warn("No memory allocator specified, please pass one. "

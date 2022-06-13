@@ -1,6 +1,6 @@
-#from charm4py import entry_method, chare, Chare, Array, Reducer, Future, charm
-#from charm4py.pool import PoolScheduler, Pool
-#from charm4py.charm import Charm, CharmRemote
+from charm4py import entry_method, chare, Chare, Array, Reducer, Future, charm
+from charm4py.pool import PoolScheduler, Pool
+from charm4py.charm import Charm, CharmRemote
 #from charm4py.chare import GROUP, MAINCHARE, ARRAY, CHARM_TYPES, Mainchare, Group, ArrayMap
 #from charm4py.sections import SectionManager
 #import inspect
@@ -16,9 +16,35 @@ from os.path import exists
 from grudge.loopy_dg_kernels.run_tests import run_single_param_set, generic_test
 from grudge.grudge_array_context import convert
 #from grudge.execution import diff_prg, elwise_linear
-import mpi4py.MPI as MPI
-from schwimmbad import SerialPool, MPIPool
-#from schwimmbad.mpi import MPIAsyncPool
+
+# Makes one PE inactive on each host so the number of workers is the same on all hosts as
+# opposed to the basic PoolScheduler which has one fewer worker on the host with PE 0.
+# This can be useful for running tasks on a GPU cluster for example.
+class BalancedPoolScheduler(PoolScheduler):
+
+    def __init__(self):
+       super().__init__()
+       n_pes = charm.numPes()
+       n_hosts = charm.numHosts()
+       pes_per_host = n_pes // n_hosts
+
+       assert n_pes % n_hosts == 0 # Enforce constant number of pes per host
+       assert pes_per_host > 1 # We're letting one pe on each host be unused
+
+       self.idle_workers = set([i for i in range(n_pes) if not i % pes_per_host == 0 ])
+       self.num_workers = len(self.idle_workers)
+
+# Use all PEs including PE 0 
+class AllPEsPoolScheduler(PoolScheduler):
+
+    def __init__(self):
+       super().__init__()
+       n_pes = charm.numPes()
+       n_hosts = charm.numHosts()
+
+       self.idle_workers = set(range(n_pes))
+       self.num_workers = len(self.idle_workers)
+
 
 def get_queue(pe_num, platform_num):
     platforms = cl.get_platforms()
@@ -28,12 +54,20 @@ def get_queue(pe_num, platform_num):
     return queue
 
 
+def do_work(args):
+    params = args[0]
+    knl = args[1]
+    queue = get_queue(charm.myPe())
+    print("PE: ", charm.myPe())
+    avg_time, transform_list = dgk.run_tests.apply_transformations_and_run_test(queue, knl, dgk.run_tests.generic_test, params)
+    return avg_time, params
+
 def test(args):
     platform_id, knl, tlist_generator, params, test_fn = args
-    comm = MPI.COMM_WORLD # Assume we're using COMM_WORLD. May need to change this in the future
-    queue = get_queue(comm.Get_rank(), platform_id)
+    queue = get_queue(charm.myPe(), platform_id)
     result = run_single_param_set(queue, knl, tlist_generator, params, test_fn) 
     return result
+
 
 
 def unpickle_kernel(fname):
@@ -42,7 +76,6 @@ def unpickle_kernel(fname):
     program = load(f)
     f.close()
     return program
-
 
 def autotune_pickled_kernels(path, platform_id, actx_class, comm):
     from os import listdir
@@ -57,7 +90,13 @@ def autotune_pickled_kernels(path, platform_id, actx_class, comm):
             knl_id = knl_id.split("_")[-1]
             print("Kernel ID", knl_id)
             print("New kernel ID", gac.unique_program_id(knl))
-            
+
+            print(knl)
+            for arg in knl.default_entrypoint.args:
+                print(arg.tags)
+            #exit()
+
+            """
             assert knl_id == gac.unique_program_id(knl)
             knl = lp.set_options(knl, lp.Options(no_numpy=True, return_dict=True))
             knl = gac.set_memory_layout(knl)
@@ -70,7 +109,7 @@ def autotune_pickled_kernels(path, platform_id, actx_class, comm):
                 parallel_autotune(knl, platform_id, actx_class, comm)
             else:
                 print("hjson file exists, skipping")
-
+            """
 
 def parallel_autotune(knl, platform_id, actx_class, comm):
 
@@ -78,7 +117,7 @@ def parallel_autotune(knl, platform_id, actx_class, comm):
     platforms = cl.get_platforms()
     gpu_devices = platforms[platform_id].get_devices(device_type=cl.device_type.GPU)
     n_gpus = len(gpu_devices)
-    ctx = cl.Context(devices=[gpu_devices[comm.Get_rank() % n_gpus]])
+    ctx = cl.Context(devices=[gpu_devices[charm.myPe() % n_gpus]])
     profiling = cl.command_queue_properties.PROFILING_ENABLE
     queue = cl.CommandQueue(ctx, properties=profiling)    
 
@@ -89,14 +128,15 @@ def parallel_autotune(knl, platform_id, actx_class, comm):
         queue,
         allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
 
-    knl = lp.set_options(knl, lp.Options(no_numpy=True, return_dict=True))
+    #knl = gac.fix_program_parameters(knl)
+    #knl = lp.set_options(knl, lp.Options(no_numpy=True, return_dict=True))
     knl = gac.set_memory_layout(knl)
     pid = gac.unique_program_id(knl)
-    os.makedirs(os.path.dirname("./hjson"), exist_ok=True)
+    os.makedirs(os.getcwd() + "/hjson", exist_ok=True)
     hjson_file_str = f"hjson/{knl.default_entrypoint.name}_{pid}.hjson"
 
-    #assert comm.Get_size() > 1
-    #assert charm.numPes() > 1
+
+    assert charm.numPes() > 1
     #assert charm.numPes() - 1 <= charm.numHosts()*len(gpu_devices)
     #assert charm.numPes() <= charm.numHosts()*(len(gpu_devices) + 1)
     # Check that it can assign one PE to each GPU
@@ -125,19 +165,12 @@ def parallel_autotune(knl, platform_id, actx_class, comm):
 
     #pool_proxy = Chare(BalancedPoolScheduler, onPE=0) # Need to use own charm++ branch to make work
 
-    #pool_proxy = Chare(PoolScheduler, onPE=0)
-    #mypool = MPIAsyncPool()
-    mypool = MPIPool()#Pool(pool_proxy)
-    #mypool = SerialPool()
-    if isinstance(mypool, MPIPool) and not mypool.is_master():
-        mypool.wait()
-        sys.exit(0)
-
-    sort_key = lambda entry: entry[0]
-    transformations = {}
+    pool_proxy = Chare(PoolScheduler, onPE=0)
+    mypool = Pool(pool_proxy)
     if len(args) > 0: # Guard against empty list
-        results = list(mypool.map(test, args))
-        mypool.close()
+        results = mypool.map(test, args)
+
+        sort_key = lambda entry: entry[0]
         results.sort(key=sort_key)
         
         #for r in results:
@@ -152,7 +185,7 @@ def parallel_autotune(knl, platform_id, actx_class, comm):
 
         avg_time, transformations, data = results[ret_index]
     else:
-        mypool.close()
+        transformations = {}
     
     od = {"transformations": transformations}
     out_file = open(hjson_file_str, "wt+")
@@ -207,40 +240,21 @@ def main(args):
         print(r)
 """
 
-def main():
+def main(args):
+    import mpi4py.MPI as MPI
     from mirgecom.array_context import MirgecomAutotuningArrayContext as Maac
     comm = MPI.COMM_WORLD
     
     autotune_pickled_kernels("./pickled_programs", 0, Maac, comm)
-
     print("DONE!")
     exit()
 
-"""
-def worker(task):
-    a, b = task
-    return a**2 + b**2
-
-def main(args):
-    # Here we generate some fake data
-    import random
-    a = [random.random() for _ in range(10000)]
-    b = [random.random() for _ in range(10000)]
-
-    tasks = list(zip(a, b))
-    results = pool.map(worker, tasks)
-    pool.close()
-
-    print(results[:8])
-"""
-
+def charm_autotune():
+    charm.start(main)
+    print(result)
+    charm.exit()
+ 
 if __name__ == "__main__":
-    import sys
-    main()
-
-    #pool = MPIPool()
-
-    #if not pool.is_master():
-    #    pool.wait()
-    #    sys.exit(0)
-
+    charm.start(main)
+    print(result)
+    charm.exit()

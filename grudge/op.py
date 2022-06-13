@@ -860,7 +860,9 @@ def _apply_inverse_mass_operator(
             # true_Minv ~ ref_Minv * ref_M * (1/jac_det) * ref_Minv
             actx.einsum("ei,ij,ej->ei",
                         jac_inv,
-                        ref_mass_inverse,
+                        actx.tag_axis(0,
+                                      DiscretizationDOFAxisTag(),
+                                      ref_mass_inverse),
                         vec_i,
                         tagged=(FirstAxisIsElementsTag(),kd_tag))
         )
@@ -1046,7 +1048,30 @@ def _apply_face_mass_operator(dcoll: DiscretizationCollection, dd, vec):
         kd_tag = KernelDataTag(kernel_data)
 
         data.append(actx.einsum("ifj,fej,fej->ei",
-                        ref_fm_mat,
+            actx.tag_axis(0,
+                          DiscretizationDOFAxisTag(),
+                          actx.tag_axis(
+                              2,
+                              DiscretizationDOFAxisTag(),
+                              reference_face_mass_matrix(
+                                  actx,
+                                  face_element_group=afgrp,
+                                  vol_element_group=vgrp,
+                                  dtype=dtype))),
+            actx.tag_axis(1,
+                          DiscretizationElementAxisTag(),
+                          surf_ae_i.reshape(
+                              vgrp.mesh_el_group.nfaces,
+                              vgrp.nelements,
+                              surf_ae_i.shape[-1])),
+            actx.tag_axis(0,
+                          DiscretizationFaceAxisTag(),
+                          vec_i.reshape(
+                              vgrp.mesh_el_group.nfaces,
+                              vgrp.nelements,
+                              afgrp.nunit_dofs)),
+
+            ref_fm_mat,
                         surf_ae_i.reshape(
                                 vgrp.mesh_el_group.nfaces,
                                 vgrp.nelements,
@@ -1057,10 +1082,6 @@ def _apply_face_mass_operator(dcoll: DiscretizationCollection, dd, vec):
                                 afgrp.nunit_dofs),
                         arg_names=("ref_face_mass_mat", "jac_surf", "vec"),
                         tagged=(FirstAxisIsElementsTag(),kd_tag)))
-        
-        
-
-       
 
     return DOFArray(actx, data=tuple(data))
 
