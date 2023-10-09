@@ -506,14 +506,14 @@ if _HAVE_FUSION_ACTX:
     
     MPIPytatoArrayContext = MPIFusionContractorArrayContext
 
-    from meshmode.array_context import AutotuningFusionContractorArrayContext
-    class MPIAutotuningFusionContractorArrayContext(MPIPytatoArrayContextBase, AutotuningFusionContractorArrayContext):
+    from meshmode.array_context import KernelDumpingFusionContractorArrayContext#AutotuningFusionContractorArrayContext
+    class MPIKernelDumpingFusionContractorArrayContext(MPIPytatoArrayContextBase, KernelDumpingFusionContractorArrayContext):
         """
         ..autofunction:: __init__
         """
 
 
-    MPIPytatoArrayContext = MPIAutotuningFusionContractorArrayContext
+    MPIPytatoArrayContext = MPIKernelDumpingFusionContractorArrayContext
     
 else:
     MPIPytatoArrayContext = MPIBasePytatoPyOpenCLArrayContext
@@ -521,7 +521,7 @@ else:
 # }}}
 
 
- # {{{ pytest actx factory
+ # {{{ pyt est actx factory
 
 class PytestPyOpenCLArrayContextFactory(
         _PytestPyOpenCLArrayContextFactoryWithClass):
@@ -593,8 +593,8 @@ def get_reasonable_array_context_class(
 
             if _HAVE_FUSION_ACTX:
                 if distributed:
-                    actx_class = MPIAutotuningFusionContractorArrayContext
-                    print("Using MPIAutotuningFusionContractorArrayContext")
+                    actx_class = MPIKernelDumpingFusionContractorArrayContext
+                    print("Using MPIKernelDumpingFusionContractorArrayContext")
                     #actx_class = MPIFusionContractorArrayContext
                 else:
                     actx_class = FusionContractorArrayContext
