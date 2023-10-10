@@ -506,8 +506,9 @@ if _HAVE_FUSION_ACTX:
     
     MPIPytatoArrayContext = MPIFusionContractorArrayContext
 
-    from meshmode.array_context import KernelDumpingFusionContractorArrayContext#AutotuningFusionContractorArrayContext
-    class MPIKernelDumpingFusionContractorArrayContext(MPIPytatoArrayContextBase, KernelDumpingFusionContractorArrayContext):
+    # Need to fix KernelDumpingFusionContractorArrayContext so can run with fuxed kernels
+    from meshmode.array_context import KernelDumpingFusionContractorArrayContextBase#AutotuningFusionContractorArrayContext
+    class MPIKernelDumpingFusionContractorArrayContext(MPIPytatoArrayContextBase, KernelDumpingFusionContractorArrayContextBase):
         """
         ..autofunction:: __init__
         """
