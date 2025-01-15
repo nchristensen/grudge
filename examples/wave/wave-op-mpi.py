@@ -24,32 +24,27 @@ THE SOFTWARE.
 """
 
 
-import numpy as np
-import numpy.linalg as la  # noqa
-import pyopencl as cl
-import pyopencl.tools as cl_tools
-
-from arraycontext import (
-    with_container_arithmetic,
-    dataclass_array_container
-)
-
+import logging
 from dataclasses import dataclass
 
-from pytools.obj_array import flat_obj_array, make_obj_array
+import numpy as np
+import numpy.linalg as la  # noqa
 
+import pyopencl as cl
+import pyopencl.tools as cl_tools
+from arraycontext import dataclass_array_container, with_container_arithmetic
 from meshmode.dof_array import DOFArray
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
+from pytools.obj_array import flat_obj_array, make_obj_array
 
-from grudge.dof_desc import as_dofdesc, DISCR_TAG_BASE, DISCR_TAG_QUAD
-from grudge.trace_pair import TracePair
-from grudge.discretization import make_discretization_collection
-from grudge.shortcuts import make_visualizer, compiled_lsrk45_step
-
-import grudge.op as op
 import grudge.geometry as geo
+import grudge.op as op
+from grudge.discretization import make_discretization_collection
+from grudge.dof_desc import DISCR_TAG_BASE, DISCR_TAG_QUAD, as_dofdesc
+from grudge.shortcuts import compiled_lsrk45_step, make_visualizer
+from grudge.trace_pair import TracePair
 
-import logging
+
 logger = logging.getLogger(__name__)
 
 from mpi4py import MPI
@@ -180,19 +175,24 @@ def bump(actx, dcoll, t=0):
 
 
 def main(ctx_factory, dim=2, order=3,
-         visualize=False, lazy=False, use_quad=False, use_nonaffine_mesh=False,
-         no_diagnostics=False):
-    cl_ctx = ctx_factory()
-    queue = cl.CommandQueue(cl_ctx)
-
+         visualize=False, lazy=False, numpy=False, use_quad=False,
+         use_nonaffine_mesh=False, no_diagnostics=False):
     comm = MPI.COMM_WORLD
     num_parts = comm.size
 
     from grudge.array_context import get_reasonable_array_context_class
-    actx_class = get_reasonable_array_context_class(lazy=lazy, distributed=True)
-    if lazy:
+    actx_class = get_reasonable_array_context_class(lazy=lazy,
+                                                    distributed=True, numpy=numpy)
+
+    if numpy:
+        actx = actx_class(comm)
+    elif lazy:
+        cl_ctx = ctx_factory()
+        queue = cl.CommandQueue(cl_ctx)
         actx = actx_class(comm, queue, mpi_base_tag=15000)
     else:
+        cl_ctx = ctx_factory()
+        queue = cl.CommandQueue(cl_ctx)
         actx = actx_class(comm, queue,
                 allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
                 force_device_scalars=True)
@@ -232,9 +232,10 @@ def main(ctx_factory, dim=2, order=3,
     else:
         local_mesh = comm.scatter(None)
 
-    from meshmode.discretization.poly_element import \
-            QuadratureSimplexGroupFactory, \
-            default_simplex_group_factory
+    from meshmode.discretization.poly_element import (
+        QuadratureSimplexGroupFactory,
+        default_simplex_group_factory,
+    )
     dcoll = make_discretization_collection(
         actx, local_mesh,
         discr_tag_to_group_factory={
@@ -285,8 +286,8 @@ def main(ctx_factory, dim=2, order=3,
             stop = time.time()
             if no_diagnostics:
                 if comm.rank == 0:
-                    logger.info(f"step: {istep} t: {t} "
-                                f"wall: {stop-start} ")
+                    logger.info("step: %d t: %.8e wall: %.8es",
+                                istep, t, stop - start)
             else:
                 l2norm = actx.to_numpy(op.norm(dcoll, fields.u, 2))
 
@@ -298,12 +299,11 @@ def main(ctx_factory, dim=2, order=3,
                 nodalmax = actx.to_numpy(op.nodal_max(dcoll, "vol", fields.u))
                 nodalmin = actx.to_numpy(op.nodal_min(dcoll, "vol", fields.u))
                 if comm.rank == 0:
-                    logger.info(f"step: {istep} t: {t} "
-                                f"L2: {l2norm} "
-                                f"Linf: {linfnorm} "
-                                f"sol max: {nodalmax} "
-                                f"sol min: {nodalmin} "
-                                f"wall: {stop-start} ")
+                    logger.info("step: %d t: %.8e L2: %.8e Linf: %.8e "
+                                "sol max: %.8e sol min: %.8e wall: %.8e",
+                                istep, t, l2norm, linfnorm, nodalmax, nodalmin,
+                                stop - start)
+
             if visualize:
                 vis.write_parallel_vtk_file(
                     comm,
@@ -328,6 +328,8 @@ if __name__ == "__main__":
     parser.add_argument("--visualize", action="store_true")
     parser.add_argument("--lazy", action="store_true",
                         help="switch to a lazy computation mode")
+    parser.add_argument("--numpy", action="store_true",
+                        help="switch to numpy-based array context")
     parser.add_argument("--quad", action="store_true")
     parser.add_argument("--nonaffine", action="store_true")
     parser.add_argument("--no-diagnostics", action="store_true")
@@ -340,6 +342,7 @@ if __name__ == "__main__":
          order=args.order,
          visualize=args.visualize,
          lazy=args.lazy,
+         numpy=args.numpy,
          use_quad=args.quad,
          use_nonaffine_mesh=args.nonaffine,
          no_diagnostics=args.no_diagnostics)

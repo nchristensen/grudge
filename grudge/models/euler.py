@@ -48,30 +48,27 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import numpy as np
-
 from abc import ABCMeta, abstractmethod
-
 from dataclasses import dataclass
 
+import numpy as np
+
 from arraycontext import (
+    ArrayContext,
     dataclass_array_container,
     with_container_arithmetic,
     map_array_container, thaw,
     outer
 )
-
 from meshmode.dof_array import DOFArray
-
-from grudge.discretization import DiscretizationCollection
-from grudge.dof_desc import DOFDesc, DISCR_TAG_BASE, as_dofdesc
-from grudge.models import HyperbolicOperator
-from grudge.trace_pair import TracePair
-
 from pytools.obj_array import make_obj_array
 
-import grudge.op as op
 import grudge.geometry as geo
+import grudge.op as op
+from grudge.discretization import DiscretizationCollection
+from grudge.dof_desc import DISCR_TAG_BASE, DOFDesc, as_dofdesc
+from grudge.models import HyperbolicOperator
+from grudge.trace_pair import TracePair
 
 
 # {{{ Array containers for the Euler model
@@ -79,17 +76,15 @@ import grudge.geometry as geo
 @with_container_arithmetic(bcast_obj_array=False,
                            bcast_container_types=(DOFArray, np.ndarray),
                            matmul=True,
-                           rel_comparison=True)
+                           rel_comparison=True,
+                           )
 @dataclass_array_container
 @dataclass(frozen=True)
 class ConservedEulerField:
-    mass: DOFArray
-    energy: DOFArray
+    # mass and energy become arrays when computing fluxes.
+    mass: DOFArray | np.ndarray
+    energy: DOFArray | np.ndarray
     momentum: np.ndarray
-
-    @property
-    def array_context(self):
-        return self.mass.array_context
 
     @property
     def dim(self):
@@ -217,7 +212,7 @@ def compute_wavespeed(cv_state: ConservedEulerField, gamma: float):
     :returns: A :class:`~meshmode.dof_array.DOFArray` containing local wavespeeds.
     """
     actx = cv_state.array_context
-    rho, u, p = conservative_to_primitive_vars(cv_state, gamma)
+    rho, u, p = conservative_to_primitive_vars(cv_state, gamma=gamma)
 
     return actx.np.sqrt(np.dot(u, u)) + actx.np.sqrt(gamma * (p / rho))
 
@@ -234,6 +229,7 @@ class InviscidBCObject(metaclass=ABCMeta):
     @abstractmethod
     def boundary_tpair(
             self,
+            actx: ArrayContext,
             dcoll: DiscretizationCollection,
             dd_bc: DOFDesc,
             restricted_state: ConservedEulerField, t=0):
@@ -244,10 +240,12 @@ class PrescribedBC(InviscidBCObject):
 
     def boundary_tpair(
             self,
+            actx: ArrayContext,
             dcoll: DiscretizationCollection,
             dd_bc: DOFDesc,
             restricted_state: ConservedEulerField, t=0):
         actx = restricted_state.array_context
+        dd_base = as_dofdesc("vol", DISCR_TAG_BASE)
 
         return TracePair(
             dd_bc,
@@ -260,11 +258,11 @@ class InviscidWallBC(InviscidBCObject):
 
     def boundary_tpair(
             self,
+            actx: ArrayContext,
             dcoll: DiscretizationCollection,
             dd_bc: DOFDesc,
             state: ConservedEulerField, t=0):
-        actx = state.array_context
-        dd_base = as_dofdesc("vol").with_discr_tag(DISCR_TAG_BASE)
+        dd_base = as_dofdesc("vol", DISCR_TAG_BASE)
         nhat = geo.normal(actx, dcoll, dd_bc)
         interior = op.project(dcoll, dd_base, dd_bc, state)
 
@@ -301,11 +299,12 @@ def euler_volume_flux(
     return ConservedEulerField(
         mass=cv_state.momentum,
         energy=u * (cv_state.energy + p),
-        momentum=rho * outer(u, u) + np.eye(dcoll.dim) * p
+        momentum=rho * outer(u, u) + np.eye(dcoll.dim, dtype=object) * p
     )
 
 
 def euler_numerical_flux(
+        actx: ArrayContext,
         dcoll: DiscretizationCollection, tpair: TracePair,
         gamma: float, dissipation=False):
     """Computes the interface numerical flux for the Euler operator.
@@ -317,9 +316,15 @@ def euler_numerical_flux(
         dissipation.
     :returns: A :class:`ConservedEulerField` containing the interface fluxes.
     """
+    from grudge.dof_desc import FACE_RESTR_ALL, VTAG_ALL, BoundaryDomainTag
+
+    dd_intfaces = tpair.dd
+    dd_allfaces = dd_intfaces.with_domain_tag(
+        BoundaryDomainTag(FACE_RESTR_ALL, VTAG_ALL)
+        )
+
     q_ll = tpair.int
     q_rr = tpair.ext
-    actx = q_ll.array_context
 
     flux_tpair = TracePair(
         tpair.dd,
@@ -327,13 +332,11 @@ def euler_numerical_flux(
         exterior=euler_volume_flux(dcoll, q_rr, gamma)
     )
     num_flux = flux_tpair.avg
-    normal = geo.normal(actx, dcoll, dd_intfaces)
-
-    if lf_stabilization:
-        from arraycontext import outer
+    normal = geo.normal(actx, dcoll, tpair.dd)
 
     if dissipation:
         # Compute jump penalization parameter
+
         lam = actx.np.maximum(compute_wavespeed(q_ll, gamma),
                               compute_wavespeed(q_rr, gamma))
         num_flux -= lam*outer(tpair.diff, normal)/2
@@ -365,14 +368,16 @@ class EulerOperator(HyperbolicOperator):
         self.lf_stabilization = flux_type == "lf"
         self.qtag = quadrature_tag
 
-    def max_characteristic_velocity(self, actx, **kwargs):
+    def max_characteristic_velocity(self, actx: ArrayContext, **kwargs):
         state = kwargs["state"]
         return compute_wavespeed(state, self.gamma)
 
-    def operator(self, t, q):
+    def operator(self, actx: ArrayContext, t, q):
         dcoll = self.dcoll
         gamma = self.gamma
         qtag = self.qtag
+        dq = as_dofdesc("vol", qtag)
+        df = as_dofdesc("all_faces", qtag)
 
         dissipation = self.lf_stabilization
 
@@ -394,20 +399,16 @@ class EulerOperator(HyperbolicOperator):
             for tpair in op.interior_trace_pairs(dcoll, q)
         ]
 
-        # Compute volume derivatives
-        volume_derivs = op.weak_local_div(
-            dcoll, dd_vol_quad,
-            euler_volume_flux(
-                dcoll, op.project(dcoll, dd_base, dd_vol_quad, q), gamma)
-        )
-
         # Compute interior interface fluxes
         interface_fluxes = (
             sum(
                 op.project(dcoll, qtpair.dd, dd_face_quad,
-                           euler_numerical_flux(dcoll, qtpair, gamma,
-                                                dissipation=dissipation))
-                for qtpair in interior_trace_pairs
+                           euler_numerical_flux(
+                               actx, dcoll,
+                               op.tracepair_with_discr_tag(dcoll, qtag, tpair),
+                               gamma=gamma,
+                               lf_stabilization=self.lf_stabilization
+                           ) for tpair in op.interior_trace_pairs(dcoll, q))
             )
         )
 
@@ -421,18 +422,25 @@ class EulerOperator(HyperbolicOperator):
                     dd_bc,
                     dd_face_quad,
                     euler_numerical_flux(
-                        dcoll,
-                        boundary_condition.boundary_tpair(
-                            dcoll=dcoll,
-                            dd_bc=dd_bc,
-                            restricted_state=op.project(dcoll, dd_base, dd_bc, q),
+                        actx, dcoll,
+                        self.bdry_conditions[btag].boundary_tpair(
+                            actx, dcoll,
+                            as_dofdesc(btag, qtag),
+                            q,
                             t=t
                         ),
-                        gamma,
-                        dissipation=dissipation
+                        gamma=gamma,
+                        lf_stabilization=self.lf_stabilization
                     )
                 )
                 interface_fluxes = interface_fluxes + bc_flux
+
+        # Compute volume derivatives
+        volume_derivs = op.weak_local_div(
+            dcoll, dd_vol_quad,
+            euler_volume_flux(
+                dcoll, op.project(dcoll, dd_base, dd_vol_quad, q), gamma)
+        )
 
         return op.inverse_mass(
             dcoll,

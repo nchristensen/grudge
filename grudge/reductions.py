@@ -34,6 +34,7 @@ Elementwise reductions
 
 from __future__ import annotations
 
+
 __copyright__ = """
 Copyright (C) 2021 University of Illinois Board of Trustees
 """
@@ -58,33 +59,34 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+from functools import partial, reduce
 
-from functools import reduce, partial
+import numpy as np
 
 from arraycontext import (
+    ArrayOrContainer,
+    Scalar,
     make_loopy_program,
     map_array_container,
     serialize_container,
     tag_axes,
-    Scalar, ArrayOrContainer
 )
-
-from grudge.discretization import DiscretizationCollection
-
-from pytools import memoize_in
-
 from meshmode.dof_array import DOFArray
 from meshmode.transform_metadata import (
+    DiscretizationDOFAxisTag,
     DiscretizationElementAxisTag,
-    DiscretizationDOFAxisTag)
+)
+from pymbolic import Number, RealNumber
+from pytools import memoize_in
 
-import numpy as np
 import grudge.dof_desc as dof_desc
+from grudge.array_context import MPIBasedArrayContext
+from grudge.discretization import DiscretizationCollection
 
 
 # {{{ Nodal reductions
 
-def norm(dcoll: DiscretizationCollection, vec, p, dd=None) -> Scalar:
+def norm(dcoll: DiscretizationCollection, vec, p, dd=None) -> RealNumber:
     r"""Return the vector p-norm of a function represented
     by its vector of degrees of freedom *vec*.
 
@@ -102,6 +104,8 @@ def norm(dcoll: DiscretizationCollection, vec, p, dd=None) -> Scalar:
     from arraycontext import get_container_context_recursively
     actx = get_container_context_recursively(vec)
 
+    assert actx is not None
+
     dd = dof_desc.as_dofdesc(dd)
 
     if p == 2:
@@ -118,7 +122,7 @@ def norm(dcoll: DiscretizationCollection, vec, p, dd=None) -> Scalar:
         raise ValueError("unsupported norm order")
 
 
-def nodal_sum(dcoll: DiscretizationCollection, dd, vec) -> Scalar:
+def nodal_sum(dcoll: DiscretizationCollection, dd, vec) -> Number:
     r"""Return the nodal sum of a vector of degrees of freedom *vec*.
 
     :arg dd: a :class:`~grudge.dof_desc.DOFDesc`, or a value
@@ -127,21 +131,22 @@ def nodal_sum(dcoll: DiscretizationCollection, dd, vec) -> Scalar:
         :class:`~arraycontext.ArrayContainer`.
     :returns: a device scalar denoting the nodal sum.
     """
-    comm = dcoll.mpi_communicator
-    if comm is None:
+    from arraycontext import get_container_context_recursively
+    actx = get_container_context_recursively(vec)
+
+    if not isinstance(actx, MPIBasedArrayContext):
         return nodal_sum_loc(dcoll, dd, vec)
+
+    comm = actx.mpi_communicator
 
     # NOTE: Do not move, we do not want to import mpi4py in single-rank computations
     from mpi4py import MPI
-
-    from arraycontext import get_container_context_recursively
-    actx = get_container_context_recursively(vec)
 
     return actx.from_numpy(
         comm.allreduce(actx.to_numpy(nodal_sum_loc(dcoll, dd, vec)), op=MPI.SUM))
 
 
-def nodal_sum_loc(dcoll: DiscretizationCollection, dd, vec) -> Scalar:
+def nodal_sum_loc(dcoll: DiscretizationCollection, dd, vec) -> Number:
     r"""Return the rank-local nodal sum of a vector of degrees of freedom *vec*.
 
     :arg dd: a :class:`~grudge.dof_desc.DOFDesc`, or a value
@@ -158,12 +163,12 @@ def nodal_sum_loc(dcoll: DiscretizationCollection, dd, vec) -> Scalar:
 
     actx = vec.array_context
 
-    return sum([
+    return sum(
         actx.np.sum(grp_ary) if grp_ary.size else actx.from_numpy(np.array(0.))
-        for grp_ary in vec])
+        for grp_ary in vec)
 
 
-def nodal_min(dcoll: DiscretizationCollection, dd, vec, *, initial=None) -> Scalar:
+def nodal_min(dcoll: DiscretizationCollection, dd, vec, *, initial=None) -> RealNumber:
     r"""Return the nodal minimum of a vector of degrees of freedom *vec*.
 
     :arg dd: a :class:`~grudge.dof_desc.DOFDesc`, or a value
@@ -173,13 +178,16 @@ def nodal_min(dcoll: DiscretizationCollection, dd, vec, *, initial=None) -> Scal
     :arg initial: an optional initial value. Defaults to `numpy.inf`.
     :returns: a device scalar denoting the nodal minimum.
     """
-    comm = dcoll.mpi_communicator
-    if comm is None:
+    from arraycontext import get_container_context_recursively
+    actx = get_container_context_recursively(vec)
+
+    if not isinstance(actx, MPIBasedArrayContext):
         return nodal_min_loc(dcoll, dd, vec, initial=initial)
+
+    comm = actx.mpi_communicator
 
     # NOTE: Do not move, we do not want to import mpi4py in single-rank computations
     from mpi4py import MPI
-    actx = vec.array_context
 
     return actx.from_numpy(
         comm.allreduce(
@@ -188,7 +196,7 @@ def nodal_min(dcoll: DiscretizationCollection, dd, vec, *, initial=None) -> Scal
 
 
 def nodal_min_loc(
-        dcoll: DiscretizationCollection, dd, vec, *, initial=None) -> Scalar:
+        dcoll: DiscretizationCollection, dd, vec, *, initial=None) -> RealNumber:
     r"""Return the rank-local nodal minimum of a vector of degrees
     of freedom *vec*.
 
@@ -200,10 +208,10 @@ def nodal_min_loc(
     :returns: a scalar denoting the rank-local nodal minimum.
     """
     if not isinstance(vec, DOFArray):
-        return min(
+        return np.min([
             nodal_min_loc(dcoll, dd, comp, initial=initial)
             for _, comp in serialize_container(vec)
-        )
+        ])
 
     actx = vec.array_context
 
@@ -220,7 +228,7 @@ def nodal_min_loc(
             vec, initial)
 
 
-def nodal_max(dcoll: DiscretizationCollection, dd, vec, *, initial=None) -> Scalar:
+def nodal_max(dcoll: DiscretizationCollection, dd, vec, *, initial=None) -> RealNumber:
     r"""Return the nodal maximum of a vector of degrees of freedom *vec*.
 
     :arg dd: a :class:`~grudge.dof_desc.DOFDesc`, or a value
@@ -230,13 +238,16 @@ def nodal_max(dcoll: DiscretizationCollection, dd, vec, *, initial=None) -> Scal
     :arg initial: an optional initial value. Defaults to `-numpy.inf`.
     :returns: a device scalar denoting the nodal maximum.
     """
-    comm = dcoll.mpi_communicator
-    if comm is None:
+    from arraycontext import get_container_context_recursively
+    actx = get_container_context_recursively(vec)
+
+    if not isinstance(actx, MPIBasedArrayContext):
         return nodal_max_loc(dcoll, dd, vec, initial=initial)
+
+    comm = actx.mpi_communicator
 
     # NOTE: Do not move, we do not want to import mpi4py in single-rank computations
     from mpi4py import MPI
-    actx = vec.array_context
 
     return actx.from_numpy(
         comm.allreduce(
@@ -245,7 +256,7 @@ def nodal_max(dcoll: DiscretizationCollection, dd, vec, *, initial=None) -> Scal
 
 
 def nodal_max_loc(
-        dcoll: DiscretizationCollection, dd, vec, *, initial=None) -> Scalar:
+        dcoll: DiscretizationCollection, dd, vec, *, initial=None) -> RealNumber:
     r"""Return the rank-local nodal maximum of a vector of degrees
     of freedom *vec*.
 
@@ -257,10 +268,10 @@ def nodal_max_loc(
     :returns: a scalar denoting the rank-local nodal maximum.
     """
     if not isinstance(vec, DOFArray):
-        return max(
+        return np.max([
             nodal_max_loc(dcoll, dd, comp, initial=initial)
             for _, comp in serialize_container(vec)
-        )
+        ])
 
     actx = vec.array_context
 
@@ -286,14 +297,23 @@ def integral(dcoll: DiscretizationCollection, dd, vec) -> Scalar:
         :class:`~arraycontext.ArrayContainer` of them.
     :returns: a device scalar denoting the evaluated integral.
     """
-    from grudge.op import _apply_mass_operator
-
     dd = dof_desc.as_dofdesc(dd)
+    discr = dcoll.discr_from_dd(dd)
 
-    ones = dcoll.discr_from_dd(dd).zeros(vec.array_context) + 1.0
-    return nodal_sum(
-        dcoll, dd, vec * _apply_mass_operator(dcoll, dd, dd, ones)
+    from grudge.geometry import area_element
+    actx = vec.array_context
+    area_elements = area_element(
+        actx, dcoll, dd=dd,
+        _use_geoderiv_connection=actx.supports_nonscalar_broadcasting)
+    qwts = DOFArray(
+        actx,
+        data=tuple(
+            actx.from_numpy(
+                np.tile(grp.quadrature_rule().weights,
+                        (ae_i.shape[0], 1)))*ae_i
+            for grp, ae_i in zip(discr.groups, area_elements))
     )
+    return nodal_sum(dcoll, dd, vec*qwts)
 
 # }}}
 
@@ -351,7 +371,7 @@ def _apply_elementwise_reduction(
         )
     else:
         @memoize_in(actx, (_apply_elementwise_reduction, dd,
-                        "elementwise_%s_prg" % op_name))
+                        f"elementwise_{op_name}_prg"))
         def elementwise_prg():
             # FIXME: This computes the reduction value redundantly for each
             # output DOF.
@@ -360,14 +380,16 @@ def _apply_elementwise_reduction(
                     "{[iel]: 0 <= iel < nelements}",
                     "{[idof, jdof]: 0 <= idof, jdof < ndofs}"
                 ],
-                """
-                    result[iel, idof] = %s(jdof, operand[iel, jdof])
-                """ % op_name,
-                name="grudge_elementwise_%s_knl" % op_name
+                f"""
+                    result[iel, idof] = {op_name}(jdof, operand[iel, jdof])
+                """,
+                name=f"grudge_elementwise_{op_name}_knl"
             )
             import loopy as lp
             from meshmode.transform_metadata import (
-                    ConcurrentElementInameTag, ConcurrentDOFInameTag)
+                ConcurrentDOFInameTag,
+                ConcurrentElementInameTag,
+            )
             return lp.tag_inames(t_unit, {
                 "iel": ConcurrentElementInameTag(),
                 "idof": ConcurrentDOFInameTag()})
@@ -498,13 +520,22 @@ def elementwise_integral(
         raise TypeError("invalid number of arguments")
 
     dd = dof_desc.as_dofdesc(dd)
+    discr = dcoll.discr_from_dd(dd)
 
-    from grudge.op import _apply_mass_operator
-
-    ones = dcoll.discr_from_dd(dd).zeros(vec.array_context) + 1.0
-    return elementwise_sum(
-        dcoll, dd, vec * _apply_mass_operator(dcoll, dd, dd, ones)
+    from grudge.geometry import area_element
+    actx = vec.array_context
+    area_elements = area_element(
+        actx, dcoll, dd=dd,
+        _use_geoderiv_connection=actx.supports_nonscalar_broadcasting)
+    qwts = DOFArray(
+        actx,
+        data=tuple(
+            actx.from_numpy(
+                np.tile(grp.quadrature_rule().weights,
+                        (ae_i.shape[0], 1)))*ae_i
+            for grp, ae_i in zip(discr.groups, area_elements))
     )
+    return elementwise_sum(dcoll, dd, vec*qwts)
 
 # }}}
 

@@ -38,10 +38,11 @@ these symbols correctly.)
 
 .. class:: ArrayOrContainer
 
-    See :class:`arraycontext.ArrayOrContainer`.
+    See :data:`arraycontext.ArrayOrContainer`.
 """
 
 from __future__ import annotations
+
 
 __copyright__ = """
 Copyright (C) 2021 Andreas Kloeckner
@@ -69,107 +70,119 @@ THE SOFTWARE.
 """
 
 
-from arraycontext import (ArrayContext, map_array_container, tag_axes,
-        ArrayOrContainer)
-
+from collections.abc import Hashable
 from functools import partial
+import numpy as np
 
-from meshmode.dof_array import DOFArray
-from meshmode.transform_metadata import (FirstAxisIsElementsTag,
-                                         DiscretizationDOFAxisTag,
-                                         DiscretizationElementAxisTag,
-                                         DiscretizationFaceAxisTag)
-
-from grudge.discretization import DiscretizationCollection
-from grudge.dof_desc import as_dofdesc
-
+import modepy as mp
+from arraycontext import (
+    Array,
+    ArrayContext,
+    ArrayOrContainer,
+    map_array_container,
+    tag_axes,
+)
+from meshmode.discretization import (
+    InterpolatoryElementGroupBase,
+    NodalElementGroupBase,
+)
+from meshmode.dof_array import DOFArray, warn
+from meshmode.transform_metadata import (
+    DiscretizationDOFAxisTag,
+    DiscretizationElementAxisTag,
+    DiscretizationFaceAxisTag,
+    FirstAxisIsElementsTag,
+)
+from modepy.tools import (
+    reshape_array_for_tensor_product_space as fold,
+    unreshape_array_for_tensor_product_space as unfold
+)
 from pytools import keyed_memoize_in
 from pytools.obj_array import make_obj_array
 
-import numpy as np
-
+# from grudge.array_context import OutputIsTensorProductDOFArrayOrdered
 import grudge.dof_desc as dof_desc
+from grudge.discretization import DiscretizationCollection
 from grudge.dof_desc import (
-    DD_VOLUME_ALL, FACE_RESTR_ALL, DISCR_TAG_BASE,
-    DOFDesc, VolumeDomainTag
+    DD_VOLUME_ALL,
+    DISCR_TAG_BASE,
+    DISCR_TAG_QUAD,
+    FACE_RESTR_ALL,
+    DOFDesc,
+    VolumeDomainTag,
+    as_dofdesc,
 )
-
 from grudge.interpolation import interp
 from grudge.projection import project, volume_quadrature_project
 
 from grudge.reductions import (
-    norm,
-    nodal_sum,
-    nodal_min,
-    nodal_max,
-    nodal_sum_loc,
-    nodal_min_loc,
-    nodal_max_loc,
-    integral,
-    elementwise_sum,
+    elementwise_integral,
     elementwise_max,
     elementwise_min,
-    elementwise_integral,
+    elementwise_sum,
+    integral,
+    nodal_max,
+    nodal_max_loc,
+    nodal_min,
+    nodal_min_loc,
+    nodal_sum,
+    nodal_sum_loc,
+    norm,
 )
-
 from grudge.trace_pair import (
-    project_tracepair,
-    tracepair_with_discr_tag,
-    interior_trace_pair,
-    interior_trace_pairs,
-    local_interior_trace_pair,
+    bdry_trace_pair,
+    bv_trace_pair,
+    # connected_ranks,
     connected_parts,
-    inter_volume_trace_pairs,
-    local_inter_volume_trace_pairs,
     cross_rank_trace_pairs,
     cross_rank_inter_volume_trace_pairs,
-    bdry_trace_pair,
-    bv_trace_pair
+    inter_volume_trace_pairs,
+    interior_trace_pair,
+    interior_trace_pairs,
+    local_inter_volume_trace_pairs,
+    local_interior_trace_pair,
+    project_tracepair,
+    tracepair_with_discr_tag,
 )
 
 
 __all__ = (
-    "project",
-    "volume_quadrature_project",
-    "interp",
-
-    "norm",
-    "nodal_sum",
-    "nodal_min",
-    "nodal_max",
-    "nodal_sum_loc",
-    "nodal_min_loc",
-    "nodal_max_loc",
-    "integral",
-    "elementwise_sum",
-    "elementwise_max",
-    "elementwise_min",
-    "elementwise_integral",
-
-    "project_tracepair",
-    "tracepair_with_discr_tag",
-    "interior_trace_pair",
-    "interior_trace_pairs",
-    "local_interior_trace_pair",
-    "connected_parts",
-    "inter_volume_trace_pairs",
-    "local_inter_volume_trace_pairs",
-    "cross_rank_trace_pairs",
-    "cross_rank_inter_volume_trace_pairs",
     "bdry_trace_pair",
     "bv_trace_pair",
-
-    "local_grad",
+    "connected_parts",
+    "cross_rank_inter_volume_trace_pairs",
+    "cross_rank_trace_pairs",
+    "elementwise_integral",
+    "elementwise_max",
+    "elementwise_min",
+    "elementwise_sum",
+    "face_mass",
+    "integral",
+    "inter_volume_trace_pairs",
+    "interior_trace_pair",
+    "interior_trace_pairs",
+    "interp",
+    "inverse_mass",
     "local_d_dx",
     "local_div",
-
-    "weak_local_grad",
+    "local_grad",
+    "local_inter_volume_trace_pairs",
+    "local_interior_trace_pair",
+    "mass",
+    "nodal_max",
+    "nodal_max_loc",
+    "nodal_min",
+    "nodal_min_loc",
+    "nodal_sum",
+    "nodal_sum_loc",
+    "norm",
+    "project",
+    "project_tracepair",
+    "tracepair_with_discr_tag",
+    "volume_quadrature_project",
     "weak_local_d_dx",
     "weak_local_div",
-
-    "mass",
-    "inverse_mass",
-    "face_mass",
+    "weak_local_grad",
     )
 
 
@@ -186,49 +199,75 @@ def _single_axis_derivative_kernel(
     # - whether the chain rule terms ("inv_jac_mat") sit outside (strong)
     #   or inside (weak) the matrix-vector product that carries out the
     #   derivative, cf. "metric_in_matvec".
+
+    # {{{ simplicial single axis derivative
+
+    def compute_simplicial_derivative(actx, in_grp, out_grp,
+                                      get_diff_mat, vec, ijm,
+                                      xyz_axis, metric_in_matvec):
+        # r for rst axis
+        return actx.einsum(
+            "rej,rij,ej->ei" if metric_in_matvec else "rei,rij,ej->ei",
+            ijm[xyz_axis],
+            get_diff_mat(
+                actx,
+                out_element_group=out_grp,
+                in_element_group=in_grp),
+            vec,
+            arg_names=("inv_jac_t", "ref_stiffT_mat", "vec", ),
+            tagged=(FirstAxisIsElementsTag(),))
+
+    # }}}
+
     return DOFArray(
         actx,
         data=tuple(
-            # r for rst axis
-            actx.einsum("rej,rij,ej->ei" if metric_in_matvec else "rei,rij,ej->ei",
-                        ijm_i[xyz_axis],
-                        get_diff_mat(
-                            actx,
-                            out_element_group=out_grp,
-                            in_element_group=in_grp),
-                        vec_i,
-                        arg_names=("inv_jac_t", "ref_stiffT_mat", "vec", ),
-                        tagged=(FirstAxisIsElementsTag(),))
-
+            compute_simplicial_derivative(actx, in_grp, out_grp,
+                                               get_diff_mat, vec_i, ijm_i,
+                                               xyz_axis, metric_in_matvec)
             for out_grp, in_grp, vec_i, ijm_i in zip(
-                out_discr.groups, in_discr.groups, vec,
-                inv_jac_mat)))
+                out_discr.groups,
+                in_discr.groups,
+                vec,
+                inv_jac_mat, strict=True)))
 
 
 def _gradient_kernel(actx, out_discr, in_discr, get_diff_mat, inv_jac_mat, vec,
         *, metric_in_matvec):
     # See _single_axis_derivative_kernel for comments on the usage scenarios
     # (both strong and weak derivative) and their differences.
+
+    # {{{ simplicial grad
+
+    def compute_simplicial_grad(actx, in_grp, out_grp, get_diff_mat, vec_i,
+                                ijm_i, metric_in_matvec):
+        return actx.einsum(
+            "xrej,rij,ej->xei" if metric_in_matvec else "xrei,rij,ej->xei",
+            ijm_i,
+            get_diff_mat(
+                actx,
+                out_element_group=out_grp,
+                in_element_group=in_grp
+            ),
+            vec_i,
+            arg_names=("inv_jac_t", "ref_stiffT_mat", "vec"),
+            tagged=(FirstAxisIsElementsTag(),))
+
+    # }}}
+
     per_group_grads = [
-        # r for rst axis
-        # x for xyz axis
-        actx.einsum("xrej,rij,ej->xei" if metric_in_matvec else "xrei,rij,ej->xei",
-                    ijm_i,
-                    get_diff_mat(
-                        actx,
-                        out_element_group=out_grp,
-                        in_element_group=in_grp
-                    ),
-                    vec_i,
-                    arg_names=("inv_jac_t", "ref_stiffT_mat", "vec"),
-                    tagged=(FirstAxisIsElementsTag(),))
+        compute_simplicial_grad(actx, in_grp, out_grp, get_diff_mat, vec_i,
+                                     ijm_i, metric_in_matvec)
+
         for out_grp, in_grp, vec_i, ijm_i in zip(
             out_discr.groups, in_discr.groups, vec,
-            inv_jac_mat)]
+                inv_jac_mat, strict=True)
+    ]
 
     return make_obj_array([
-            DOFArray(
-                actx, data=tuple([pgg_i[xyz_axis] for pgg_i in per_group_grads]))
+            DOFArray(actx, data=tuple([  # noqa: C409
+                pgg_i[xyz_axis] for pgg_i in per_group_grads
+                ]))
             for xyz_axis in range(out_discr.ambient_dim)])
 
 
@@ -236,22 +275,33 @@ def _divergence_kernel(actx, out_discr, in_discr, get_diff_mat, inv_jac_mat, vec
         *, metric_in_matvec):
     # See _single_axis_derivative_kernel for comments on the usage scenarios
     # (both strong and weak derivative) and their differences.
+
+    # {{{ simplicial div
+
+    def compute_simplicial_div(actx, in_grp, out_grp, get_diff_mat, vec_i,
+                               ijm_i, metric_in_matvec):
+        return actx.einsum(
+            "xrej,rij,xej->ei" if metric_in_matvec else "xrei,rij,xej->ei",
+            ijm_i,
+            get_diff_mat(
+                actx,
+                out_element_group=out_grp,
+                in_element_group=in_grp
+            ),
+            vec_i,
+            arg_names=("inv_jac_t", "ref_stiffT_mat", "vec"),
+            tagged=(FirstAxisIsElementsTag(),))
+
+    # }}}
+
     per_group_divs = [
-        # r for rst axis
-        # x for xyz axis
-        actx.einsum("xrej,rij,xej->ei" if metric_in_matvec else "xrei,rij,xej->ei",
-                    ijm_i,
-                    get_diff_mat(
-                        actx,
-                        out_element_group=out_grp,
-                        in_element_group=in_grp
-                    ),
-                    vec_i,
-                    arg_names=("inv_jac_t", "ref_stiffT_mat", "vec"),
-                    tagged=(FirstAxisIsElementsTag(),))
+        compute_simplicial_div(actx, in_grp, out_grp, get_diff_mat, vec_i,
+                                    ijm_i, metric_in_matvec)
+
         for out_grp, in_grp, vec_i, ijm_i in zip(
             out_discr.groups, in_discr.groups, vec,
-            inv_jac_mat)]
+                inv_jac_mat, strict=True)
+    ]
 
     return DOFArray(actx, data=tuple(per_group_divs))
 
@@ -261,22 +311,33 @@ def _divergence_kernel(actx, out_discr, in_discr, get_diff_mat, inv_jac_mat, vec
 # {{{ Derivative operators
 
 def _reference_derivative_matrices(actx: ArrayContext,
-        out_element_group, in_element_group):
-    # We're accepting in_element_group for interface consistency with
-    # _reference_stiffness_transpose_matrices.
-    assert out_element_group is in_element_group
+        out_element_group: NodalElementGroupBase,
+        in_element_group: InterpolatoryElementGroupBase) -> Array:
+
+    def memoize_key(
+                out_grp: NodalElementGroupBase, in_grp: InterpolatoryElementGroupBase
+            ) -> Hashable:
+        return (
+            out_grp.discretization_key(),
+            in_grp.discretization_key())
 
     @keyed_memoize_in(
         actx, _reference_derivative_matrices,
-        lambda grp: grp.discretization_key())
-    def get_ref_derivative_mats(grp):
-        from meshmode.discretization.poly_element import diff_matrices
+        memoize_key)
+    def get_ref_derivative_mats(
+                out_grp: NodalElementGroupBase,
+                in_grp: InterpolatoryElementGroupBase) -> Array:
         return actx.freeze(
                 actx.tag_axis(
                     1, DiscretizationDOFAxisTag(),
                     actx.from_numpy(
-                        np.asarray(diff_matrices(grp)))))
-    return get_ref_derivative_mats(out_element_group)
+                        np.asarray(
+                            mp.diff_matrices(
+                                in_grp.basis_obj(),
+                                out_grp.unit_nodes,
+                                from_nodes=in_grp.unit_nodes,
+                            )))))
+    return get_ref_derivative_mats(out_element_group, in_element_group)
 
 
 def _strong_scalar_grad(dcoll, dd_in, vec):
@@ -295,9 +356,9 @@ def _strong_scalar_grad(dcoll, dd_in, vec):
 
 
 def _strong_scalar_div(dcoll, dd, vecs):
+    from arraycontext import get_container_context_recursively, serialize_container
+
     from grudge.geometry import inverse_surface_metric_derivative_mat
-    from arraycontext import (get_container_context_recursively,
-                              serialize_container)
 
     assert isinstance(vecs, np.ndarray)
     assert vecs.shape == (dcoll.ambient_dim,)
@@ -443,20 +504,20 @@ def _reference_stiffness_transpose_matrices(
                                  in_grp.discretization_key()))
     def get_ref_stiffness_transpose_mat(out_grp, in_grp):
         if in_grp == out_grp:
-            from meshmode.discretization.poly_element import \
-                mass_matrix, diff_matrices
+            mmat = mp.mass_matrix(out_grp.basis_obj(), out_grp.unit_nodes)
+            diff_matrices = mp.diff_matrices(out_grp.basis_obj(), out_grp.unit_nodes)
 
-            mmat = mass_matrix(out_grp)
             return actx.freeze(
                 actx.tag_axis(1, DiscretizationDOFAxisTag(),
                     actx.from_numpy(
                         np.asarray(
-                            [dmat.T @ mmat.T for dmat in diff_matrices(out_grp)]))))
+                            [dmat.T @ mmat.T for dmat in diff_matrices]))))
 
-        from modepy import vandermonde
+        from modepy import multi_vandermonde, vandermonde
+
         basis = out_grp.basis_obj()
         vand = vandermonde(basis.functions, out_grp.unit_nodes)
-        grad_vand = vandermonde(basis.gradients, in_grp.unit_nodes)
+        grad_vand = multi_vandermonde(basis.gradients, in_grp.unit_nodes)
         vand_inv_t = np.linalg.inv(vand).T
 
         if not isinstance(grad_vand, tuple):
@@ -474,6 +535,7 @@ def _reference_stiffness_transpose_matrices(
                 ).copy()  # contigify the array
             )
         )
+
     return get_ref_stiffness_transpose_mat(out_element_group,
                                            in_element_group)
 
@@ -496,9 +558,9 @@ def _weak_scalar_grad(dcoll, dd_in, vec):
 
 
 def _weak_scalar_div(dcoll, dd_in, vecs):
+    from arraycontext import get_container_context_recursively, serialize_container
+
     from grudge.geometry import inverse_surface_metric_derivative_mat
-    from arraycontext import (get_container_context_recursively,
-                              serialize_container)
 
     assert isinstance(vecs, np.ndarray)
     assert vecs.shape == (dcoll.ambient_dim,)
@@ -672,16 +734,11 @@ def reference_mass_matrix(actx: ArrayContext, out_element_group, in_element_grou
                                  in_grp.discretization_key()))
     def get_ref_mass_mat(out_grp, in_grp):
         if out_grp == in_grp:
-            from meshmode.discretization.poly_element import mass_matrix
-
             return actx.freeze(
                 actx.from_numpy(
-                    np.asarray(
-                        mass_matrix(out_grp),
-                        order="C"
+                    mp.mass_matrix(out_grp.basis_obj(), out_grp.unit_nodes)
                     )
                 )
-            )
 
         from modepy import vandermonde
         basis = out_grp.basis_obj()
@@ -730,7 +787,8 @@ def _apply_mass_operator(
                 tagged=(FirstAxisIsElementsTag(),))
 
             for in_grp, out_grp, ae_i, vec_i in zip(
-                    in_discr.groups, out_discr.groups, area_elements, vec)
+                    in_discr.groups, out_discr.groups, area_elements, vec,
+                    strict=True)
         )
     )
 
@@ -784,13 +842,14 @@ def reference_inverse_mass_matrix(actx: ArrayContext, element_group):
         lambda grp: grp.discretization_key())
     def get_ref_inv_mass_mat(grp):
         from modepy import inverse_mass_matrix
+
         basis = grp.basis_obj()
 
         return actx.freeze(
             actx.tag_axis(0, DiscretizationDOFAxisTag(),
                 actx.from_numpy(
                     np.asarray(
-                        inverse_mass_matrix(basis.functions, grp.unit_nodes),
+                        inverse_mass_matrix(basis, grp.unit_nodes),
                         order="C"))))
 
     return get_ref_inv_mass_mat(element_group)
@@ -816,17 +875,229 @@ def _apply_inverse_mass_operator(
     discr = dcoll.discr_from_dd(dd_in)
     inv_area_elements = 1./area_element(actx, dcoll, dd=dd_in,
             _use_geoderiv_connection=actx.supports_nonscalar_broadcasting)
+
+    def apply_to_simplicial_elements(jac_inv, vec, ref_inv_mass):
+        # Based on https://arxiv.org/pdf/1608.03836.pdf
+        # true_Minv ~ ref_Minv * ref_M * (1/jac_det) * ref_Minv
+        return actx.einsum(
+            "ei,ij,ej->ei",
+            jac_inv,
+            ref_inv_mass,
+            vec,
+            tagged=(FirstAxisIsElementsTag(),))
+
     group_data = [
-            # Based on https://arxiv.org/pdf/1608.03836.pdf
-            # true_Minv ~ ref_Minv * ref_M * (1/jac_det) * ref_Minv
-            actx.einsum("ei,ij,ej->ei",
-                        jac_inv,
-                        reference_inverse_mass_matrix(actx, element_group=grp),
-                        vec_i,
-                        tagged=(FirstAxisIsElementsTag(),))
-            for grp, jac_inv, vec_i in zip(discr.groups, inv_area_elements, vec)]
+        apply_to_simplicial_elements(jac_inv, vec_i,
+            reference_inverse_mass_matrix(actx, element_group=grp))
+        for grp, jac_inv, vec_i in zip(discr.groups, inv_area_elements, vec)
+    ]
 
     return DOFArray(actx, data=tuple(group_data))
+
+
+def _apply_inverse_mass_operator_quad(
+        dcoll: DiscretizationCollection, dd, vec):
+    if not isinstance(vec, DOFArray):
+        return map_array_container(
+            partial(_apply_inverse_mass_operator_quad, dcoll, dd), vec
+        )
+
+    from grudge.geometry import area_element
+
+    actx = vec.array_context
+    dd_quad = dd.with_discr_tag(DISCR_TAG_QUAD)
+    dd_base = dd.with_discr_tag(DISCR_TAG_BASE)
+    discr_quad = dcoll.discr_from_dd(dd_quad)
+    discr_base = dcoll.discr_from_dd(dd_base)
+
+    # Based on https://arxiv.org/pdf/1608.03836.pdf
+    # true_Minv ~ ref_Minv * ref_M * (1/jac_det) * ref_Minv
+    # Overintegration version of action on *vec*:
+    # true_Minv ~ ref_Minv * (ref_M)_qtb * (1/Jac)_quad * P(Minv*vec)
+    # P => projection to quadrature, qti => quad-to-base
+
+    # Compute 1/Jac on quadrature discr
+    inv_area_elements = 1/area_element(
+            actx, dcoll, dd=dd_quad,
+            _use_geoderiv_connection=actx.supports_nonscalar_broadcasting)
+
+    def apply_minv_to_vec(vec, ref_inv_mass):
+        return actx.einsum(
+            "ij,ej->ei",
+            ref_inv_mass,
+            vec,
+            tagged=(FirstAxisIsElementsTag(),))
+
+    # The rest of wadg
+    def apply_rest_of_wadg(mm_inv, mm, vec):
+        return actx.einsum(
+            "ni,ij,ej->en",
+            mm_inv,
+            mm,
+            vec,
+            tagged=(FirstAxisIsElementsTag(),))
+
+    stage1_group_data = [
+        apply_minv_to_vec(
+            vec_i, reference_inverse_mass_matrix(actx, element_group=grp))
+        for grp, vec_i in zip(discr_base.groups, vec)
+    ]
+    stage2 = inv_area_elements * project(
+        dcoll, dd_base, dd_quad,
+        DOFArray(actx, data=tuple(stage1_group_data)))
+
+    wadg_group_data = [
+        apply_rest_of_wadg(
+            reference_inverse_mass_matrix(actx, out_grp),
+            reference_mass_matrix(actx, out_grp, in_grp), vec_i)
+        for in_grp, out_grp, vec_i in zip(
+                discr_quad.groups, discr_base.groups, stage2)
+    ]
+
+    return DOFArray(actx, data=tuple(wadg_group_data))
+
+
+"""
+def _apply_inverse_mass_operator_quad(
+        dcoll: DiscretizationCollection, dd_out, dd_in, vec):
+    if not isinstance(vec, DOFArray):
+        return map_array_container(
+            partial(_apply_inverse_mass_operator_quad, dcoll, dd_out, dd_in), vec
+        )
+
+    from grudge.geometry import area_element
+
+    if dd_out != dd_in:
+        raise ValueError(
+            "Cannot compute inverse of a mass matrix mapping "
+            "between different element groups; inverse is not "
+            "guaranteed to be well-defined"
+        )
+
+    actx = vec.array_context
+    dd_quad = dd_in
+    dd_base = dd_quad.with_discr_tag(DISCR_TAG_BASE)
+    discr_quad = dcoll.discr_from_dd(dd_quad)
+    discr_base = dcoll.discr_from_dd(dd_base)
+
+    # ae = \
+    #    project(dcoll, dd_base, dd_quad,
+    #            area_element(
+    #                actx, dcoll, dd=dd_base,
+    #                _use_geoderiv_connection=actx.supports_nonscalar_broadcasting))
+
+    ae = area_element(
+        actx, dcoll, dd=dd_quad,
+        _use_geoderiv_connection=actx.supports_nonscalar_broadcasting)
+
+    inv_area_elements = 1./ae
+
+    def apply_to_tensor_product_elements(grp, jac_inv, vec, ref_inv_mass):
+
+        vec = fold(grp.space, vec)
+
+        for xyz_axis in range(grp.dim):
+            vec = single_axis_operator_application(
+                actx, grp.dim, ref_inv_mass, xyz_axis, vec,
+                tags=(FirstAxisIsElementsTag(),
+                      OutputIsTensorProductDOFArrayOrdered(),),
+                arg_names=("ref_inv_mass_1d", "vec"))
+
+        vec = unfold(grp.space, vec)
+
+        return actx.einsum(
+            "ei,ei->ei",
+            jac_inv,
+            vec,
+            tagged=(FirstAxisIsElementsTag(),)
+        )
+
+    def apply_to_simplicial_elements_stage1(vec, ref_inv_mass):
+        # Based on https://arxiv.org/pdf/1608.03836.pdf
+        # true_Minv ~ ref_Minv * ref_M * (1/jac_det) * ref_Minv
+        return actx.einsum(
+            "ij,ej->ei",
+            ref_inv_mass,
+            vec,
+            tagged=(FirstAxisIsElementsTag(),))
+
+    def apply_to_simplicial_elements_staged(mm_inv, mm, vec):
+        return actx.einsum(
+            "ni,ij,ej->en",
+            mm_inv,
+            mm,
+            vec,
+            tagged=(FirstAxisIsElementsTag(),))
+
+    def apply_to_simplicial_elements_stage2(jac_inv, vec):
+        # Based on https://arxiv.org/pdf/1608.03836.pdf
+        # true_Minv ~ ref_Minv * ref_M * (1/jac_det) * ref_Minv
+        return actx.einsum(
+            "ei,ej->ei",
+            jac_inv,
+            vec,
+            tagged=(FirstAxisIsElementsTag(),))
+
+    def apply_to_simplicial_elements_stage3(mm, vec):
+        # Based on https://arxiv.org/pdf/1608.03836.pdf
+        # true_Minv ~ ref_Minv * ref_M * (1/jac_det) * ref_Minv
+        return actx.einsum(
+            "ij,ej->ei",
+            mm,
+            vec,
+            tagged=(FirstAxisIsElementsTag(),))
+
+    def apply_to_simplicial_elements_stage4(mm_inv, vec):
+        # Based on https://arxiv.org/pdf/1608.03836.pdf
+        # true_Minv ~ ref_Minv * ref_M * (1/jac_det) * ref_Minv
+        return actx.einsum(
+            "ij,ej->ei",
+            mm_inv,
+            vec,
+            tagged=(FirstAxisIsElementsTag(),))
+
+    stage1_group_data = [
+        apply_to_simplicial_elements_stage1(vec_i,
+            reference_inverse_mass_matrix(actx, element_group=grp))
+        for grp, vec_i in zip(discr_base.groups, vec)
+    ]
+
+    stage1 = DOFArray(actx, data=tuple(stage1_group_data))
+    stage1 = project(dcoll, dd_base, dd_quad, stage1)
+
+
+    stage2_group_data = [
+        apply_to_simplicial_elements_stage2(jac_inv, vec_i)
+        for jac_inv, vec_i in zip(inv_area_elements, stage1)
+    ]
+
+    stage2 = DOFArray(actx, data=tuple(stage2_group_data))
+
+    staged_group_data = [
+        apply_to_simplicial_elements_staged(
+            reference_inverse_mass_matrix(actx, out_grp),
+            reference_mass_matrix(actx, out_grp, in_grp), vec_i)
+        for in_grp, out_grp, vec_i in zip(
+                discr_quad.groups, discr_base.groups, stage2)
+    ]
+
+    stage3_group_data = [
+        apply_to_simplicial_elements_stage3(
+            reference_mass_matrix(actx, out_grp, in_grp), vec_i)
+        for out_grp, in_grp, vec_i in zip(discr_base.groups, discr_quad.groups,
+                                          stage2)
+    ]
+    stage3 = DOFArray(actx, data=tuple(stage3_group_data))
+
+    group_data = [
+        apply_to_simplicial_elements_stage4(
+            reference_inverse_mass_matrix(actx, element_group=grp), vec_i)
+        for grp, vec_i in zip(discr_base.groups, stage3)
+    ]
+
+    # return DOFArray(actx, data=tuple(group_data))
+    return DOFArray(actx, data=tuple(staged_group_data))
+"""
 
 
 def inverse_mass(dcoll: DiscretizationCollection, *args) -> ArrayOrContainer:
@@ -876,6 +1147,11 @@ def inverse_mass(dcoll: DiscretizationCollection, *args) -> ArrayOrContainer:
     else:
         raise TypeError("invalid number of arguments")
 
+    if dd.uses_quadrature():
+        # if not dcoll._has_affine_groups(dd.domain_tag):
+        return _apply_inverse_mass_operator_quad(dcoll, dd, vec)
+    # dd = dd.with_discr_tag(DISCR_TAG_BASE)
+
     return _apply_inverse_mass_operator(dcoll, dd, dd, vec)
 
 # }}}
@@ -902,8 +1178,7 @@ def reference_face_mass_matrix(
 
         import modepy as mp
         from meshmode.discretization import ElementGroupWithBasis
-        from meshmode.discretization.poly_element import \
-            QuadratureSimplexElementGroup
+        from meshmode.discretization.poly_element import QuadratureSimplexElementGroup
 
         n = vol_grp.order
         m = face_grp.order
@@ -1020,7 +1295,8 @@ def _apply_face_mass_operator(dcoll: DiscretizationCollection, dd_in, vec):
             for vgrp, afgrp, vec_i, surf_ae_i in zip(volm_discr.groups,
                                                      face_discr.groups,
                                                      vec,
-                                                     surf_area_elements)))
+                                                     surf_area_elements,
+                                                     strict=True)))
 
 
 def face_mass(dcoll: DiscretizationCollection, *args) -> ArrayOrContainer:
@@ -1067,6 +1343,32 @@ def face_mass(dcoll: DiscretizationCollection, *args) -> ArrayOrContainer:
         raise TypeError("invalid number of arguments")
 
     return _apply_face_mass_operator(dcoll, dd_in, vec)
+
+# }}}
+
+
+# {{{ general single axis operator application
+
+def single_axis_operator_application(actx, dim, operator, axis, data,
+                                     arg_names=None, tags=None):
+    """
+    Used for applying 1D operators to a single axis of a tensor of DOF data.
+    """
+
+    if not isinstance(arg_names, tuple):
+        raise TypeError("arg_names must be a tuple.")
+    if not isinstance(tags, tuple):
+        raise TypeError("arg_names must be a tuple.")
+
+    operator_spec = "ij"
+    data_spec = f'e{"abcdefghklm"[:axis]}j{"nopqrstuvwxyz"[:dim-axis-1]}'
+    out_spec = f'e{"abcdefghklm"[:axis]}i{"nopqrstuvwxyz"[:dim-axis-1]}'
+
+    spec = operator_spec + "," + data_spec + "->" + out_spec
+
+    return actx.einsum(spec, operator, data,
+                       arg_names=arg_names,
+                       tagged=tags)
 
 # }}}
 

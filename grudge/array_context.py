@@ -8,6 +8,9 @@
 .. autofunction:: get_reasonable_array_context_class
 """
 
+from __future__ import annotations
+
+
 __copyright__ = "Copyright (C) 2020 Andreas Kloeckner"
 
 __license__ = """
@@ -32,18 +35,24 @@ THE SOFTWARE.
 
 # {{{ imports
 
-from typing import (
-        TYPE_CHECKING, Mapping, Tuple, Any, Callable, Optional, Type,
-        FrozenSet)
+import logging
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pytools.tag import Tag
-from meshmode.array_context import (
-        PyOpenCLArrayContext as _PyOpenCLArrayContextBase,
-        PytatoPyOpenCLArrayContext as _PytatoPyOpenCLArrayContextBase)
+from typing import TYPE_CHECKING, Any
 from warnings import warn
 
-import logging
+from typing_extensions import Self
+
+from meshmode.array_context import (
+    PyOpenCLArrayContext as _PyOpenCLArrayContextBase,
+    PytatoPyOpenCLArrayContext as _PytatoPyOpenCLArrayContextBase,
+)
+from pytools import to_identifier
+from pytools.tag import Tag
+
+
 logger = logging.getLogger(__name__)
+
 
 try:
     # FIXME: temporary workaround while SingleGridWorkBalancingPytatoArrayContext
@@ -68,6 +77,7 @@ try:
 except ImportError:
     _HAVE_SINGLE_GRID_WORK_BALANCING = False
 
+
 try:
     # FIXME: temporary workaround while FusionContractorArrayContext
     # is not available in meshmode's main branch
@@ -80,8 +90,8 @@ try:
     except ImportError:
         warn("Your loopy and meshmode branches are mismatched. "
              "Please make sure that you have the "
-             "https://github.com/kaushikcfd/loopy/tree/pytato-array-context-transforms "  # noqa
-             "branch of loopy.")
+             "https://github.com/kaushikcfd/loopy/tree/pytato-array-context-transforms "
+             "branch of loopy.", stacklevel=1)
         _HAVE_FUSION_ACTX = False
     else:
         _HAVE_FUSION_ACTX = True
@@ -90,40 +100,67 @@ except ImportError:
     _HAVE_FUSION_ACTX = False
 
 
-from arraycontext.pytest import (
-        _PytestPyOpenCLArrayContextFactoryWithClass,
-        _PytestPytatoPyOpenCLArrayContextFactory,
-        register_pytest_array_context_factory)
-from arraycontext import ArrayContext
+from arraycontext import ArrayContext, NumpyArrayContext
 from arraycontext.container import ArrayContainer
 from arraycontext.impl.pytato.compile import LazilyPyOpenCLCompilingFunctionCaller
+from arraycontext.pytest import (
+    _PytestNumpyArrayContextFactory,
+    _PytestPyOpenCLArrayContextFactoryWithClass,
+    _PytestPytatoPyOpenCLArrayContextFactory,
+    register_pytest_array_context_factory,
+)
+
 
 if TYPE_CHECKING:
     import pytato as pt
-    from pytato.partition import PartId
+    from mpi4py import MPI
     from pytato import DistributedGraphPartition
+    from pytato.partition import PartId
+
     import pyopencl
     import pyopencl.tools
-    from mpi4py import MPI
 
 
 class PyOpenCLArrayContext(_PyOpenCLArrayContextBase):
     """Inherits from :class:`meshmode.array_context.PyOpenCLArrayContext`. Extends it
-    to understand :mod:`grudge`-specific transform metadata. (Of which there isn't
-    any, for now.)
+    to understand :mod:`grudge`-specific transform metadata.
     """
-    def __init__(self, queue: "pyopencl.CommandQueue",
-            allocator: Optional["pyopencl.tools.AllocatorBase"] = None,
-            wait_event_queue_length: Optional[int] = None,
-            force_device_scalars: bool = False) -> None:
+    def __init__(self, queue: pyopencl.CommandQueue,
+            allocator: pyopencl.tools.AllocatorBase | None = None,
+            wait_event_queue_length: int | None = None,
+            force_device_scalars: bool = True) -> None:
 
         if allocator is None:
             warn("No memory allocator specified, please pass one. "
                  "(Preferably a pyopencl.tools.MemoryPool in order "
-                 "to reduce device allocations)")
+                 "to reduce device allocations)", stacklevel=2)
 
         super().__init__(queue, allocator,
                          wait_event_queue_length, force_device_scalars)
+
+    def transform_loopy_program(self, t_unit):
+        knl = t_unit.default_entrypoint
+
+        # {{{ process tensor product specific metadata
+
+        if knl.tags_of_type(OutputIsTensorProductDOFArrayOrdered):
+            new_args = []
+            for arg in knl.args:
+                if arg.is_output:
+                    arg = arg.copy(dim_tags=(
+                        f"N{len(arg.shape)-1},"
+                        + ",".join(f"N{i}"
+                                   for i in range(len(arg.shape)-1))
+                        ))
+
+                new_args.append(arg)
+
+            knl = knl.copy(args=new_args)
+            t_unit = t_unit.with_kernel(knl)
+
+        # }}}
+
+        return super().transform_loopy_program(t_unit)
 
 # }}}
 
@@ -132,12 +169,11 @@ class PyOpenCLArrayContext(_PyOpenCLArrayContextBase):
 
 class PytatoPyOpenCLArrayContext(_PytatoPyOpenCLArrayContextBase):
     """Inherits from :class:`meshmode.array_context.PytatoPyOpenCLArrayContext`.
-    Extends it to understand :mod:`grudge`-specific transform metadata. (Of
-    which there isn't any, for now.)
+    Extends it to understand :mod:`grudge`-specific transform metadata.
     """
     def __init__(self, queue, allocator=None,
             *,
-            compile_trace_callback: Optional[Callable[[Any, str, Any], None]]
+            compile_trace_callback: Callable[[Any, str, Any], None] | None
              = None) -> None:
         """
         :arg compile_trace_callback: A function of three arguments
@@ -150,22 +186,42 @@ class PytatoPyOpenCLArrayContext(_PytatoPyOpenCLArrayContextBase):
         if allocator is None:
             warn("No memory allocator specified, please pass one. "
                  "(Preferably a pyopencl.tools.MemoryPool in order "
-                 "to reduce device allocations)")
+                 "to reduce device allocations)", stacklevel=2)
+
         super().__init__(queue, allocator,
                 compile_trace_callback=compile_trace_callback)
+
+    def transform_loopy_program(self, t_unit):
+        knl = t_unit.default_entrypoint
+
+        # {{{ process tensor product specific metadata
+
+        if knl.tags_of_type(OutputIsTensorProductDOFArrayOrdered):
+            new_args = []
+            for arg in knl.args:
+                if arg.is_output:
+                    arg = arg.copy(dim_tags=(
+                        f"N{len(arg.shape)-1},"
+                        + ",".join(f"N{i}"
+                                   for i in range(len(arg.shape)-1))
+                        ))
+
+                new_args.append(arg)
+
+            knl = knl.copy(args=new_args)
+
+        # }}}
+
+        return super().transform_loopy_program(t_unit)
 
 # }}}
 
 
-class MPIBasedArrayContext:
-    mpi_communicator: "MPI.Comm"
+class MPIBasedArrayContext(ArrayContext):
+    mpi_communicator: MPI.Intracomm
 
 
 # {{{ distributed + pytato
-
-def _to_identifier(s: str) -> str:
-    return "".join(ch for ch in s if ch.isidentifier())
-
 
 @dataclass(frozen=True)
 class _DistributedPartProgramID:
@@ -173,11 +229,11 @@ class _DistributedPartProgramID:
     part_id: Any
 
     def __str__(self):
-        name = getattr(self.f, "__name__", "<anonymous>")
+        name = getattr(self.f, "__name__", "anonymous")
         if not name.isidentifier():
-            name = _to_identifier(name)
+            name = to_identifier(name)
 
-        part = _to_identifier(str(self.part_id))
+        part = to_identifier(str(self.part_id))
         if part:
             return f"{name}_part{part}"
         else:
@@ -247,19 +303,21 @@ class _DistributedLazilyPyOpenCLCompilingFunctionCaller(
 #                    dict_of_named_arrays)
 #            else:
 #                raise
-        distributed_partition = pt.find_distributed_partition(
-            # pylint-ignore-reason:
-            # '_BasePytatoArrayContext' has no
-            # 'mpi_communicator' member
-            # pylint: disable=no-member
-            self.actx.mpi_communicator, dict_of_named_arrays)
 
-        if __debug__:
-            # pylint-ignore-reason:
-            # '_BasePytatoArrayContext' has no 'mpi_communicator' member
-            pt.verify_distributed_partition(
-                self.actx.mpi_communicator,  # pylint: disable=no-member
-                distributed_partition)
+        with ProcessLogger(logger, "pt.find_distributed_partition"):
+            distributed_partition = pt.find_distributed_partition(
+                # pylint-ignore-reason:
+                # '_BasePytatoArrayContext' has no
+                # 'mpi_communicator' member
+                # pylint: disable=no-member
+                self.actx.mpi_communicator, dict_of_named_arrays)
+
+            if __debug__:
+                # pylint-ignore-reason:
+                # '_BasePytatoArrayContext' has no 'mpi_communicator' member
+                pt.verify_distributed_partition(
+                    self.actx.mpi_communicator,  # pylint: disable=no-member
+                    distributed_partition)
 
         self.actx._compile_trace_callback(self.f, "post_find_distributed_partition",
                 distributed_partition)
@@ -274,7 +332,7 @@ class _DistributedLazilyPyOpenCLCompilingFunctionCaller(
 
         # type-ignore-reason: 'PytatoPyOpenCLArrayContext' has no 'mpi_communicator'
         # pylint: disable=no-member
-        distributed_partition, _new_mpi_base_tag = number_distributed_tags(
+        distributed_partition, new_mpi_base_tag = number_distributed_tags(
                 self.actx.mpi_communicator,
                 distributed_partition,
                 base_tag=prev_mpi_base_tag)
@@ -282,7 +340,7 @@ class _DistributedLazilyPyOpenCLCompilingFunctionCaller(
         assert prev_mpi_base_tag == self.actx.mpi_base_tag
         # FIXME: Updating stuff inside the array context from here is *cough*
         # not super pretty.
-        self.actx.mpi_base_tag = _new_mpi_base_tag
+        self.actx.mpi_base_tag = new_mpi_base_tag
 
         self.actx._compile_trace_callback(self.f, "post_number_distributed_tags",
                 distributed_partition)
@@ -356,13 +414,13 @@ class _DistributedCompiledFunction:
        type of the callable.
     """
 
-    actx: "MPISingleGridWorkBalancingPytatoArrayContext"
-    distributed_partition: "DistributedGraphPartition"
-    part_id_to_prg: "Mapping[PartId, pt.target.BoundProgram]"
-    input_id_to_name_in_program: Mapping[Tuple[Any, ...], str]
-    output_id_to_name_in_program: Mapping[Tuple[Any, ...], str]
-    name_in_program_to_tags: Mapping[str, FrozenSet[Tag]]
-    name_in_program_to_axes: Mapping[str, Tuple["pt.Axis", ...]]
+    actx: MPIBasedArrayContext
+    distributed_partition: DistributedGraphPartition
+    part_id_to_prg: Mapping[PartId, pt.target.BoundProgram]
+    input_id_to_name_in_program: Mapping[tuple[Any, ...], str]
+    output_id_to_name_in_program: Mapping[tuple[Any, ...], str]
+    name_in_program_to_tags: Mapping[str, frozenset[Tag]]
+    name_in_program_to_axes: Mapping[str, tuple[pt.Axis, ...]]
     output_template: ArrayContainer
 
     def __call__(self, arg_id_to_arg) -> ArrayContainer:
@@ -372,17 +430,18 @@ class _DistributedCompiledFunction:
             representation.
         """
 
-        from arraycontext.impl.pytato.compile import _args_to_device_buffers
         from arraycontext.impl.pyopencl.taggable_cl_array import to_tagged_cl_array
+        from arraycontext.impl.pytato.compile import _args_to_device_buffers
         from arraycontext.impl.pytato.utils import get_cl_axes_from_pt_axes
         input_args_for_prg = _args_to_device_buffers(
                 self.actx, self.input_id_to_name_in_program, arg_id_to_arg)
 
         from pytato import execute_distributed_partition
+        # assert isinstance(self.actx, PytatoPyOpenCLArrayContext | PyOpenCLArrayContext)
         out_dict = execute_distributed_partition(
                 self.distributed_partition, self.part_id_to_prg,
-                self.actx.queue, self.actx.mpi_communicator,
-                allocator=self.actx.allocator,
+                self.actx.queue, self.actx.mpi_communicator,  # pylint: disable=no-member
+                allocator=self.actx.allocator,  # pylint: disable=no-member
                 input_args=input_args_for_prg)
 
         def to_output_template(keys, _):
@@ -400,9 +459,11 @@ class _DistributedCompiledFunction:
 
 class MPIPytatoArrayContextBase(MPIBasedArrayContext):
     def __init__(
-            self, mpi_communicator, queue, *, mpi_base_tag, allocator=None,
-            compile_trace_callback: Optional[Callable[[Any, str, Any], None]]
-            = None) -> None:
+            self, mpi_communicator, queue, *,
+            mpi_base_tag, allocator=None,
+            compile_trace_callback: Optional[Callable[[Any, str, Any], None]] = None,
+            use_axis_tag_inference_fallback: bool = False,
+            use_einsum_inference_fallback: bool = False) -> None:
         """
         :arg compile_trace_callback: A function of three arguments
             *(what, stage, ir)*, where *what* identifies the object
@@ -414,10 +475,12 @@ class MPIPytatoArrayContextBase(MPIBasedArrayContext):
         if allocator is None:
             warn("No memory allocator specified, please pass one. "
                  "(Preferably a pyopencl.tools.MemoryPool in order "
-                 "to reduce device allocations)")
+                 "to reduce device allocations)", stacklevel=2)
 
         super().__init__(queue, allocator,
-                compile_trace_callback=compile_trace_callback)
+                compile_trace_callback=compile_trace_callback,
+                use_axis_tag_inference_fallback=use_axis_tag_inference_fallback,
+                use_einsum_inference_fallback=use_einsum_inference_fallback)
 
         self.mpi_communicator = mpi_communicator
         self.mpi_base_tag = mpi_base_tag
@@ -432,7 +495,9 @@ class MPIPytatoArrayContextBase(MPIBasedArrayContext):
         # pylint: disable=no-member
         return type(self)(self.mpi_communicator, self.queue,
                 mpi_base_tag=self.mpi_base_tag,
-                allocator=self.allocator)
+                allocator=self.allocator,
+                use_axis_tag_inference_fallback=self.use_axis_tag_inference_fallback,
+                use_einsum_inference_fallback=self.use_einsum_inference_fallback)
 
 # }}}
 
@@ -448,10 +513,10 @@ class MPIPyOpenCLArrayContext(PyOpenCLArrayContext, MPIBasedArrayContext):
 
     def __init__(self,
             mpi_communicator,
-            queue: "pyopencl.CommandQueue",
-            *, allocator: Optional["pyopencl.tools.AllocatorBase"] = None,
-            wait_event_queue_length: Optional[int] = None,
-            force_device_scalars: bool = False) -> None:
+            queue: pyopencl.CommandQueue,
+            *, allocator: pyopencl.tools.AllocatorBase | None = None,
+            wait_event_queue_length: int | None = None,
+            force_device_scalars: bool = True) -> None:
         """
         See :class:`arraycontext.impl.pyopencl.PyOpenCLArrayContext` for most
         arguments.
@@ -462,7 +527,7 @@ class MPIPyOpenCLArrayContext(PyOpenCLArrayContext, MPIBasedArrayContext):
 
         self.mpi_communicator = mpi_communicator
 
-    def clone(self):
+    def clone(self) -> Self:
         # type-ignore-reason: 'DistributedLazyArrayContext' has no 'queue' member
         # pylint: disable=no-member
         return type(self)(self.mpi_communicator, self.queue,
@@ -473,15 +538,79 @@ class MPIPyOpenCLArrayContext(PyOpenCLArrayContext, MPIBasedArrayContext):
 # }}}
 
 
+# {{{ distributed + numpy
+
+class MPINumpyArrayContext(NumpyArrayContext, MPIBasedArrayContext):
+    """An array context for using distributed computation with :mod:`numpy`
+    eager evaluation.
+
+    .. autofunction:: __init__
+    """
+
+    def __init__(self, mpi_communicator) -> None:
+        super().__init__()
+
+        self.mpi_communicator = mpi_communicator
+
+    def clone(self) -> Self:
+        return type(self)(self.mpi_communicator)
+
+# }}}
+
+
 # {{{ distributed + pytato array context subclasses
 
 class MPIBasePytatoPyOpenCLArrayContext(
-        MPIPytatoArrayContextBase, PytatoPyOpenCLArrayContext):
+        MPIBasedArrayContext, PytatoPyOpenCLArrayContext):
     """
     .. autofunction:: __init__
     """
-    pass
+    def __init__(
+            self, mpi_communicator, queue, *,
+            mpi_base_tag, allocator=None,
+            compile_trace_callback: Optional[Callable[[Any, str, Any], None]] = None,
+            use_axis_tag_inference_fallback: bool = False,
+            use_einsum_inference_fallback: bool = False) -> None:
+        """
+        :arg compile_trace_callback: A function of three arguments
+            *(what, stage, ir)*, where *what* identifies the object
+            being compiled, *stage* is a string describing the compilation
+            pass, and *ir* is an object containing the intermediate
+            representation. This interface should be considered
+            unstable.
+        """
+        if allocator is None:
+            warn("No memory allocator specified, please pass one. "
+                 "(Preferably a pyopencl.tools.MemoryPool in order "
+                 "to reduce device allocations)", stacklevel=2)
 
+        super().__init__(queue, allocator,
+                compile_trace_callback=compile_trace_callback,
+                use_axis_tag_inference_fallback=use_axis_tag_inference_fallback,
+                use_einsum_inference_fallback=use_einsum_inference_fallback)
+
+        self.mpi_communicator = mpi_communicator
+        self.mpi_base_tag = mpi_base_tag
+
+    # FIXME: implement distributed-aware freeze
+
+    def compile(self, f: Callable[..., Any]) -> Callable[..., Any]:
+        return _DistributedLazilyPyOpenCLCompilingFunctionCaller(self, f)
+
+    def clone(self) -> Self:
+        return type(self)(self.mpi_communicator, self.queue,
+                mpi_base_tag=self.mpi_base_tag,
+                allocator=self.allocator,
+                use_axis_tag_inference_fallback=self.use_axis_tag_inference_fallback,
+                use_einsum_inference_fallback=self.use_einsum_inference_fallback)
+
+
+# class MPIBasePytatoPyOpenCLArrayContext(
+#        MPIPytatoArrayContextBase, PytatoPyOpenCLArrayContext):
+#    """
+#    .. autofunction:: __init__
+#    """
+#    pass
 
 if _HAVE_SINGLE_GRID_WORK_BALANCING:
     class MPISingleGridWorkBalancingPytatoArrayContext(
@@ -494,6 +623,7 @@ if _HAVE_SINGLE_GRID_WORK_BALANCING:
 else:
     MPIPytatoArrayContext = MPIBasePytatoPyOpenCLArrayContext
 
+MPIPytatoArrayContext: type[MPIBasedArrayContext] = MPIBasePytatoPyOpenCLArrayContext
 
 if _HAVE_FUSION_ACTX:
     class MPIFusionContractorArrayContext(
@@ -525,23 +655,44 @@ class PytestPyOpenCLArrayContextFactory(
         _PytestPyOpenCLArrayContextFactoryWithClass):
     actx_class = PyOpenCLArrayContext
 
+    def __call__(self):
+        from pyopencl.tools import ImmediateAllocator, MemoryPool
+
+        _ctx, queue = self.get_command_queue()
+        alloc = MemoryPool(ImmediateAllocator(queue))
+
+        return self.actx_class(
+                queue,
+                allocator=alloc,
+                force_device_scalars=self.force_device_scalars)
+
 
 class PytestPytatoPyOpenCLArrayContextFactory(
         _PytestPytatoPyOpenCLArrayContextFactory):
     actx_class = PytatoPyOpenCLArrayContext
 
+    def __call__(self):
+        _ctx, queue = self.get_command_queue()
 
-# deprecated
-class PytestPyOpenCLArrayContextFactoryWithHostScalars(
-        _PytestPyOpenCLArrayContextFactoryWithClass):
-    actx_class = PyOpenCLArrayContext
-    force_device_scalars = False
+        from pyopencl.tools import ImmediateAllocator, MemoryPool
+        alloc = MemoryPool(ImmediateAllocator(queue))
+
+        return self.actx_class(queue, allocator=alloc)
+
+
+class PytestNumpyArrayContextFactory(_PytestNumpyArrayContextFactory):
+    actx_class = NumpyArrayContext
+
+    def __call__(self):
+        return self.actx_class()
 
 
 register_pytest_array_context_factory("grudge.pyopencl",
         PytestPyOpenCLArrayContextFactory)
 register_pytest_array_context_factory("grudge.pytato-pyopencl",
         PytestPytatoPyOpenCLArrayContextFactory)
+register_pytest_array_context_factory("grudge.numpy",
+        PytestNumpyArrayContextFactory)
 
 # }}}
 
@@ -549,13 +700,14 @@ register_pytest_array_context_factory("grudge.pytato-pyopencl",
 # {{{ actx selection
 
 
-def _get_single_grid_pytato_actx_class(distributed: bool) -> Type[ArrayContext]:
+def _get_single_grid_pytato_actx_class(distributed: bool) -> type[ArrayContext]:
     if not _HAVE_SINGLE_GRID_WORK_BALANCING:
         warn("No device-parallel actx available, execution will be slow. "
              "Please make sure you have the right branches for loopy "
              "(https://github.com/kaushikcfd/loopy/tree/pytato-array-context-transforms) "  # noqa
              "and meshmode "
-             "(https://github.com/kaushikcfd/meshmode/tree/pytato-array-context-transforms).")  # noqa
+             "(https://github.com/kaushikcfd/meshmode/tree/pytato-array-context-transforms).",
+             stacklevel=1)
     # lazy, non-distributed
     if not distributed:
         if _HAVE_SINGLE_GRID_WORK_BALANCING:
@@ -572,12 +724,21 @@ def _get_single_grid_pytato_actx_class(distributed: bool) -> Type[ArrayContext]:
 
 def get_reasonable_array_context_class(
         lazy: bool = True, distributed: bool = True,
-        fusion: Optional[bool] = None,
-        ) -> Type[ArrayContext]:
-    """Returns a reasonable :class:`PyOpenCLArrayContext` currently
-    supported given the constraints of *lazy* and *distributed*."""
+        fusion: bool | None = None, numpy: bool = False,
+        ) -> type[ArrayContext]:
+    """Returns a reasonable :class:`~arraycontext.ArrayContext` currently
+    supported given the constraints of *lazy*, *distributed*, and *numpy*."""
     if fusion is None:
         fusion = lazy
+
+    if numpy:
+        assert not (lazy or fusion)
+        if distributed:
+            actx_class: type[ArrayContext] = MPINumpyArrayContext
+        else:
+            actx_class = NumpyArrayContext
+
+        return actx_class
 
     if lazy:
         if fusion:
@@ -586,7 +747,8 @@ def get_reasonable_array_context_class(
                      "Please make sure you have the right branches for loopy "
                      "(https://github.com/kaushikcfd/loopy/tree/pytato-array-context-transforms) "  # noqa
                      "and meshmode "
-                     "(https://github.com/kaushikcfd/meshmode/tree/pytato-array-context-transforms).")  # noqa
+                     "(https://github.com/kaushikcfd/meshmode/tree/pytato-array-context-transforms).",
+                     stacklevel=1)
             # lazy+fusion, non-distributed
 
             if _HAVE_FUSION_ACTX:
@@ -617,8 +779,8 @@ def get_reasonable_array_context_class(
 
 #  }}}
 
-
 # {{{ distributed + numpy
+
 try:
     from arraycontext import NumpyArrayContext
 
@@ -638,6 +800,33 @@ try:
 except ImportError:
     print("Failed to import numpy array context.")
     pass
+
+# }}}
+
+
+# {{{ tensor product-specific machinery
+
+class OutputIsTensorProductDOFArrayOrdered(Tag):
+    """Signify that the strides will not be of order "C" or "F".
+
+    The strides for the arrays containing tensor product element data are of the
+    form (slow, fastest, faster, fast). These strides are not "C" or "F" order.
+    Hence, this specialized array context takes care of specifying the
+    particular strides required.
+    """
+    pass
+
+
+class MassMatrix1d(Tag):
+    """Used in DAG transformation to realize algebraic simplification of 1D
+    inverse mass operator times mass operator.
+    """
+    pass
+
+class InverseMassMatrix1d(Tag):
+    """See MassMatrix1d.
+    """
+
 # }}}
 
 

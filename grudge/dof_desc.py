@@ -42,8 +42,8 @@ Shortcuts
 .. data:: DD_VOLUME_ALL
 .. data:: DD_VOLUME_ALL_MODAL
 
-Internal things that are visble due to type annotations
--------------------------------------------------------
+Internal things that are visible due to type annotations
+--------------------------------------------------------
 
 .. class:: _DiscretizationTag
 .. class:: ConvertibleToDOFDesc
@@ -76,26 +76,20 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import sys
-from warnings import warn
-from typing import Hashable, Union, Type, Optional, Any, Tuple
+from collections.abc import Hashable
 from dataclasses import dataclass, replace
+from typing import Any
+from warnings import warn
 
-from meshmode.discretization.connection import (
-    FACE_RESTR_INTERIOR, FACE_RESTR_ALL)
+from meshmode.discretization.connection import FACE_RESTR_ALL, FACE_RESTR_INTERIOR
 from meshmode.mesh import (
-    BTAG_PARTITION, BTAG_ALL, BTAG_REALLY_ALL, BTAG_NONE, BoundaryTag)
-
-
-# {{{ _to_identifier
-
-def _to_identifier(name: str) -> str:
-    if not name.isidentifier():
-        return "".join(ch for ch in name if ch.isidentifier())
-    else:
-        return name
-
-# }}}
+    BTAG_ALL,
+    BTAG_NONE,
+    BTAG_PARTITION,
+    BTAG_REALLY_ALL,
+    BoundaryTag,
+)
+from pytools import to_identifier
 
 
 # {{{ volume tags
@@ -112,7 +106,7 @@ VolumeTag = Hashable
 # {{{ domain tag
 
 @dataclass(frozen=True, eq=True)
-class ScalarDomainTag:  # noqa: N801
+class ScalarDomainTag:
     """A domain tag denoting scalar values."""
 
 
@@ -147,18 +141,18 @@ class BoundaryDomainTag:
     volume_tag: VolumeTag = VTAG_ALL
 
 
-DomainTag = Union[ScalarDomainTag, VolumeDomainTag, BoundaryDomainTag]
+DomainTag = ScalarDomainTag | VolumeDomainTag | BoundaryDomainTag
 
 # }}}
 
 
 # {{{ discretization tag
 
-class _DiscretizationTag:  # noqa: N801
+class _DiscretizationTag:
     pass
 
 
-DiscretizationTag = Type[_DiscretizationTag]
+DiscretizationTag = type[_DiscretizationTag]
 
 
 class DISCR_TAG_BASE(_DiscretizationTag):  # noqa: N801
@@ -237,12 +231,13 @@ class DOFDesc:
     domain_tag: DomainTag
     discretization_tag: DiscretizationTag
 
-    def __init__(self, domain_tag: Any,
-            discretization_tag: Optional[type[DiscretizationTag]] = None):
+    def __init__(self,
+            domain_tag: Any,
+            discretization_tag: DiscretizationTag | None = None) -> None:
 
         if (
-                not (isinstance(domain_tag,
-                    (ScalarDomainTag, BoundaryDomainTag, VolumeDomainTag)))
+                not isinstance(domain_tag,
+                               ScalarDomainTag | BoundaryDomainTag | VolumeDomainTag)
                 or discretization_tag is None
                 or (
                     not isinstance(discretization_tag, type)
@@ -285,18 +280,11 @@ class DOFDesc:
             if issubclass(self.discretization_tag, DISCR_TAG_QUAD):
                 return True
             elif issubclass(self.discretization_tag,
-                            (DISCR_TAG_BASE, DISCR_TAG_MODAL)):
+                            DISCR_TAG_BASE | DISCR_TAG_MODAL):
                 return False
 
         raise ValueError(
             f"Invalid discretization tag: {self.discretization_tag}")
-
-    def with_dtag(self, dtag) -> "DOFDesc":
-        from warnings import warn
-        warn("'with_dtag' is deprecated. Use 'with_domain_tag' instead. "
-                "This will stop working in 2023",
-                DeprecationWarning, stacklevel=2)
-        return replace(self, domain_tag=dtag)
 
     def with_domain_tag(self, dtag) -> "DOFDesc":
         return replace(self, domain_tag=dtag)
@@ -358,24 +346,24 @@ class DOFDesc:
             if isinstance(vtag, type):
                 vtag = vtag.__name__.replace("VTAG_", "").lower()
             elif isinstance(vtag, str):
-                vtag = _to_identifier(vtag)
+                vtag = to_identifier(vtag)
             else:
-                vtag = _to_identifier(str(vtag))
+                vtag = to_identifier(str(vtag))
             dom_id = f"v_{vtag}"
         elif isinstance(self.domain_tag, BoundaryDomainTag):
             btag = self.domain_tag.tag
             if isinstance(btag, type):
                 btag = btag.__name__.replace("BTAG_", "").lower()
             elif isinstance(btag, str):
-                btag = _to_identifier(btag)
+                btag = to_identifier(btag)
             else:
-                btag = _to_identifier(str(btag))
+                btag = to_identifier(str(btag))
             dom_id = f"b_{btag}"
         else:
             raise ValueError(f"unexpected domain tag: '{self.domain_tag}'")
 
         if isinstance(self.discretization_tag, str):
-            discr_id = _to_identifier(self.discretization_tag)
+            discr_id = to_identifier(self.discretization_tag)
         elif issubclass(self.discretization_tag, DISCR_TAG_QUAD):
             discr_id = "_quad"
         elif self.discretization_tag is DISCR_TAG_BASE:
@@ -397,29 +385,32 @@ DD_VOLUME_ALL_MODAL = DOFDesc(DTAG_VOLUME_ALL, DISCR_TAG_MODAL)
 
 def _normalize_domain_and_discr_tag(
         domain: Any,
-        discretization_tag: Optional[DiscretizationTag] = None,
-        *, _contextual_volume_tag: Optional[VolumeTag] = None
-        ) -> Tuple[DomainTag, DiscretizationTag]:
+        discretization_tag: DiscretizationTag | None = None,
+        *, _contextual_volume_tag: VolumeTag | None = None
+        ) -> tuple[DomainTag, DiscretizationTag]:
 
-    if _contextual_volume_tag is None:
-        _contextual_volume_tag = VTAG_ALL
+    contextual_volume_tag = _contextual_volume_tag
+    del _contextual_volume_tag
+
+    if contextual_volume_tag is None:
+        contextual_volume_tag = VTAG_ALL
 
     if domain == "scalar":
         domain = DTAG_SCALAR
-    elif isinstance(domain, (ScalarDomainTag, BoundaryDomainTag, VolumeDomainTag)):
+    elif isinstance(domain, ScalarDomainTag | BoundaryDomainTag | VolumeDomainTag):
         pass
     elif domain in [VTAG_ALL, "vol"]:
         domain = DTAG_VOLUME_ALL
     elif domain in [FACE_RESTR_ALL, "all_faces"]:
-        domain = BoundaryDomainTag(FACE_RESTR_ALL, _contextual_volume_tag)
+        domain = BoundaryDomainTag(FACE_RESTR_ALL, contextual_volume_tag)
     elif domain in [FACE_RESTR_INTERIOR, "int_faces"]:
-        domain = BoundaryDomainTag(FACE_RESTR_INTERIOR, _contextual_volume_tag)
+        domain = BoundaryDomainTag(FACE_RESTR_INTERIOR, contextual_volume_tag)
     elif isinstance(domain, BTAG_PARTITION):
-        domain = BoundaryDomainTag(domain, _contextual_volume_tag)
+        domain = BoundaryDomainTag(domain, contextual_volume_tag)
     elif domain in [BTAG_ALL, BTAG_REALLY_ALL, BTAG_NONE]:
-        domain = BoundaryDomainTag(domain, _contextual_volume_tag)
+        domain = BoundaryDomainTag(domain, contextual_volume_tag)
     else:
-        raise ValueError("domain tag not understood: %s" % domain)
+        raise ValueError(f"domain tag not understood: {domain}")
 
     if domain is DTAG_SCALAR and discretization_tag is not None:
         raise ValueError("cannot have nontrivial discretization tag on scalar")
@@ -435,8 +426,8 @@ ConvertibleToDOFDesc = Any
 
 def as_dofdesc(
         domain: "ConvertibleToDOFDesc",
-        discretization_tag: Optional[DiscretizationTag] = None,
-        *, _contextual_volume_tag: Optional[VolumeTag] = None) -> DOFDesc:
+        discretization_tag: DiscretizationTag | None = None,
+        *, _contextual_volume_tag: VolumeTag | None = None) -> DOFDesc:
     """
     :arg domain_tag: One of the following:
         :class:`DTAG_SCALAR` (or the string ``"scalar"``),
@@ -490,11 +481,6 @@ def __getattr__(name):
         return globals()[_deprecated_name_to_new_name[name]]
 
     raise AttributeError(f"module {__name__} has no attribute {name}")
-
-
-if sys.version_info < (3, 7):
-    for name in _deprecated_name_to_new_name:
-        globals()[name] = globals()[_deprecated_name_to_new_name[name]]
 
 # }}}
 

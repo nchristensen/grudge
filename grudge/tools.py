@@ -2,9 +2,24 @@
 .. autofunction:: build_jacobian
 .. autofunction:: map_subarrays
 .. autofunction:: rec_map_subarrays
+
+Links to canonical locations of external symbols
+------------------------------------------------
+
+(This section only exists because Sphinx does not appear able to resolve
+these symbols correctly.)
+
+.. class:: ArrayContext
+
+    See :class:`arraycontext.ArrayContext`.
+
+.. class:: ArrayOrArithContainerTc
+
+    See :data:`arraycontext.context.ArrayOrArithContainerTc`.
 """
 
 from __future__ import annotations
+
 
 __copyright__ = "Copyright (C) 2007 Andreas Kloeckner"
 
@@ -28,21 +43,28 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+from collections.abc import Callable
 from functools import partial
-from typing import Tuple, Callable, Optional, Union, Any
+from typing import Any
 
 import numpy as np
 
+from arraycontext import (
+    ArrayContext,
+    ArrayOrContainer,
+)
+from arraycontext.context import (
+    ArrayOrArithContainerTc,
+)
 from pytools import product
-from arraycontext import ArrayContext, ArrayOrContainer, ArrayOrContainerT
 
 
 # {{{ build_jacobian
 
 def build_jacobian(
         actx: ArrayContext,
-        f: Callable[[ArrayOrContainerT], ArrayOrContainerT],
-        base_state: ArrayOrContainerT,
+        f: Callable[[ArrayOrArithContainerTc], ArrayOrArithContainerTc],
+        base_state: ArrayOrArithContainerTc,
         stepsize: float) -> np.ndarray:
     """Returns a Jacobian matrix of *f* determined by a one-sided finite
     difference approximation with *stepsize*.
@@ -70,7 +92,9 @@ def build_jacobian(
         f_unit_i = f(base_state + unflatten(
             base_state, actx.from_numpy(unit_i_flat), actx))
 
-        mat[:, i] = actx.to_numpy(flatten((f_unit_i - f_base) / stepsize, actx))
+        mat[:, i] = actx.to_numpy(flatten((
+                                          f_unit_i - f_base
+                                      ) / stepsize, actx))
 
     return mat
 
@@ -81,7 +105,7 @@ def build_jacobian(
 
 def map_subarrays(
         f: Callable[[Any], Any],
-        in_shape: Tuple[int, ...], out_shape: Tuple[int, ...],
+        in_shape: tuple[int, ...], out_shape: tuple[int, ...],
         ary: Any, *, return_nested: bool = False) -> Any:
     """
     Apply a function *f* to subarrays of shape *in_shape* of an
@@ -174,10 +198,10 @@ def map_subarrays(
 
 def rec_map_subarrays(
         f: Callable[[Any], Any],
-        in_shape: Tuple[int, ...],
-        out_shape: Tuple[int, ...],
+        in_shape: tuple[int, ...],
+        out_shape: tuple[int, ...],
         ary: ArrayOrContainer, *,
-        scalar_cls: Optional[Union[type, Tuple[type]]] = None,
+        scalar_cls: type | tuple[type] | None = None,
         return_nested: bool = False) -> ArrayOrContainer:
     r"""
     Like :func:`map_subarrays`, but with support for

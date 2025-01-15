@@ -28,14 +28,13 @@ THE SOFTWARE.
 
 import numpy as np
 
-from grudge.models import HyperbolicOperator
-
 from meshmode.mesh import BTAG_ALL, BTAG_NONE
-
 from pytools.obj_array import flat_obj_array
 
-import grudge.op as op
 import grudge.geometry as geo
+import grudge.op as op
+from grudge.dof_desc import DISCR_TAG_BASE, as_dofdesc
+from grudge.models import HyperbolicOperator
 
 
 # {{{ constant-velocity
@@ -105,13 +104,15 @@ class WeakWaveOperator(HyperbolicOperator):
                     0.5*(u.ext-u.int),
                     0.5*(normal * np.dot(normal, v.ext-v.int)))
         else:
-            raise ValueError("invalid flux type '%s'" % self.flux_type)
+            raise ValueError(f"invalid flux type '{self.flux_type}'")
 
     def operator(self, t, w):
         dcoll = self.dcoll
         u = w[0]
         v = w[1:]
         actx = u.array_context
+
+        base_dd = as_dofdesc("vol", DISCR_TAG_BASE)
 
         # boundary conditions -------------------------------------------------
 
@@ -122,7 +123,7 @@ class WeakWaveOperator(HyperbolicOperator):
             # FIXME
             from warnings import warn
             warn("Inhomogeneous Dirichlet conditions on the wave equation "
-                    "are still having issues.")
+                    "are still having issues.", stacklevel=1)
 
             dir_g = self.dirichlet_bc_f
             dir_bc = flat_obj_array(2*dir_g - dir_u, dir_v)
@@ -160,9 +161,12 @@ class WeakWaveOperator(HyperbolicOperator):
                     dcoll,
                     sum(flux(tpair) for tpair in op.interior_trace_pairs(
                         dcoll, w, comm_tag=self.comm_tag))
-                    + flux(op.bv_trace_pair(dcoll, self.dirichlet_tag, w, dir_bc))
-                    + flux(op.bv_trace_pair(dcoll, self.neumann_tag, w, neu_bc))
-                    + flux(op.bv_trace_pair(dcoll, self.radiation_tag, w, rad_bc))
+                    + flux(op.bv_trace_pair(
+                            dcoll, base_dd.trace(self.dirichlet_tag), w, dir_bc))
+                    + flux(op.bv_trace_pair(
+                            dcoll, base_dd.trace(self.neumann_tag), w, neu_bc))
+                    + flux(op.bv_trace_pair(
+                            dcoll, base_dd.trace(self.radiation_tag), w, rad_bc))
                 )
             )
         )
@@ -183,7 +187,13 @@ class WeakWaveOperator(HyperbolicOperator):
 
     def estimate_rk4_timestep(self, actx, dcoll, **kwargs):
         # FIXME: Sketchy, empirically determined fudge factor
-        return 0.38 * super().estimate_rk4_timestep(actx,  dcoll, **kwargs)
+        from meshmode.discretization.poly_element import SimplexElementGroupBase
+        from grudge.dof_desc import DD_VOLUME_ALL
+        volm_discr = dcoll.discr_from_dd(DD_VOLUME_ALL)
+        tpe = any(not isinstance(grp, SimplexElementGroupBase)
+                  for grp in volm_discr.groups)
+        fudge_fac = 0.38 if not tpe else 0.23
+        return fudge_fac * super().estimate_rk4_timestep(actx,  dcoll, **kwargs)
 
 # }}}
 
@@ -214,7 +224,7 @@ class VariableCoefficientWeakWaveOperator(HyperbolicOperator):
             radiation_tag=BTAG_NONE):
         """
         :arg c: a frozen :class:`~meshmode.dof_array.DOFArray`
-            representing the propogation speed of the wave.
+            representing the propagation speed of the wave.
         """
         from arraycontext import get_container_context_recursively
         assert get_container_context_recursively(c) is None
@@ -261,7 +271,7 @@ class VariableCoefficientWeakWaveOperator(HyperbolicOperator):
                     normal * (np.dot(normal, c.ext * v.ext - c.int * v.int)))
 
         else:
-            raise ValueError("invalid flux type '%s'" % self.flux_type)
+            raise ValueError(f"invalid flux type '{self.flux_type}'")
 
     def operator(self, t, w):
         dcoll = self.dcoll
@@ -283,7 +293,7 @@ class VariableCoefficientWeakWaveOperator(HyperbolicOperator):
             # FIXME
             from warnings import warn
             warn("Inhomogeneous Dirichlet conditions on the wave equation "
-                    "are still having issues.")
+                    "are still having issues.", stacklevel=1)
 
             dir_g = self.dirichlet_bc_f
             dir_bc = flat_obj_array(dir_c, 2*dir_g - dir_u, dir_v)

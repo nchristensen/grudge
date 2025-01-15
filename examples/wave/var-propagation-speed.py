@@ -24,20 +24,20 @@ THE SOFTWARE.
 """
 
 
+import logging
+
 import numpy as np
+
 import pyopencl as cl
 import pyopencl.tools as cl_tools
-
-from grudge.array_context import PyOpenCLArrayContext
-
-from grudge.shortcuts import set_up_rk4
-from grudge import DiscretizationCollection
-
 from pytools.obj_array import flat_obj_array
 
-import grudge.op as op
+from grudge import op
+from grudge.array_context import PyOpenCLArrayContext
+from grudge.discretization import make_discretization_collection
+from grudge.shortcuts import set_up_rk4
 
-import logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,7 +56,7 @@ def main(ctx_factory, dim=2, order=4, visualize=False):
             b=(0.5,)*dim,
             nelements_per_axis=(20,)*dim)
 
-    dcoll = DiscretizationCollection(actx, mesh, order=order)
+    dcoll = make_discretization_collection(actx, mesh, order=order)
 
     def source_f(actx, dcoll, t=0):
         source_center = np.array([0.1, 0.22, 0.33])[:dcoll.dim]
@@ -78,8 +78,9 @@ def main(ctx_factory, dim=2, order=4, visualize=False):
     ones = dcoll.zeros(actx) + 1
     c = actx.np.where(np.dot(x, x) < 0.15, 0.1 * ones, 0.2 * ones)
 
-    from grudge.models.wave import VariableCoefficientWeakWaveOperator
     from meshmode.mesh import BTAG_ALL, BTAG_NONE
+
+    from grudge.models.wave import VariableCoefficientWeakWaveOperator
 
     wave_op = VariableCoefficientWeakWaveOperator(
         dcoll,
@@ -125,7 +126,7 @@ def main(ctx_factory, dim=2, order=4, visualize=False):
         u = fields[0]
         v = fields[1:]
         vis.write_vtk_file(
-            f"fld-var-propogation-speed-{step:04d}.vtu",
+            f"fld-var-propagation-speed-{step:04d}.vtu",
             [
                 ("u", u),
                 ("v", v),
@@ -140,11 +141,12 @@ def main(ctx_factory, dim=2, order=4, visualize=False):
             step += 1
 
             if step % 10 == 0:
-                logger.info(f"step: {step} t: {time()-t_last_step} "
-                            f"L2: {norm(u=event.state_component[0])}")
+                logger.info("step: %d t: %.8e L2: %.8e",
+                            step, time() - t_last_step,
+                            actx.to_numpy(norm(event.state_component[0])))
                 if visualize:
                     vis.write_vtk_file(
-                        f"fld-var-propogation-speed-{step:04d}.vtu",
+                        f"fld-var-propagation-speed-{step:04d}.vtu",
                         [
                             ("u", event.state_component[0]),
                             ("v", event.state_component[1:]),
